@@ -65,9 +65,9 @@ function mockClassifyClauses(text: string): AnalyzeResponse {
   ];
 
   const sentences = text
-    .split(/[.!?;]/)
+    .split(/[.!?;\n]+/)
     .map(s => s.trim())
-    .filter(s => s.length > 20 && s.length < 500);
+    .filter(s => s.length > 20 && s.length < 1500);
 
   const clauses: Clause[] = [];
   const seen = new Set<string>();
@@ -186,7 +186,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         const groq = new Groq({ apiKey });
 
         const completion = await groq.chat.completions.create({
-          model: 'openai/gpt-oss-20b',
+          model: 'llama3-8b-8192',
           messages: [
             { role: 'system', content: GROQ_SYSTEM_PROMPT },
             {
