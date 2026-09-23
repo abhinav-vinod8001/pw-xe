@@ -75,7 +75,7 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
     setClauses([]);
     setOcrProgress(0);
 
-    const img = webcamRef.current.getScreenshot({ width: 1280, height: 720 });
+    const img = webcamRef.current.getScreenshot();
     if (!img) {
       setError('Could not capture image. Grant camera permissions and try again.');
       setScanning(false);
@@ -158,8 +158,10 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
     } catch { /* ignore */ }
   };
 
-  const sx = (x: number) => (x / 1280) * containerSize.w;
-  const sy = (y: number) => (y / 720) * containerSize.h;
+  const videoWidth = webcamRef.current?.video?.videoWidth || 1280;
+  const videoHeight = webcamRef.current?.video?.videoHeight || 720;
+  const sx = (x: number) => (x / videoWidth) * containerSize.w;
+  const sy = (y: number) => (y / videoHeight) * containerSize.h;
 
   return (
     <div className="fixed inset-0 z-50 bg-black flex flex-col">
@@ -206,7 +208,7 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
             audio={false}
             screenshotFormat="image/jpeg"
             screenshotQuality={0.92}
-            videoConstraints={{ facingMode, width: { ideal: 1280 }, height: { ideal: 720 } }}
+            videoConstraints={{ facingMode }}
             onUserMedia={() => {
               setHasCamera(true);
               navigator.mediaDevices.enumerateDevices().then((devices) => {
@@ -215,7 +217,7 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
               }).catch(() => { /* ignore */ });
             }}
             onUserMediaError={() => setHasCamera(false)}
-            className="absolute inset-0 w-full h-full object-cover"
+            className="absolute inset-0 w-full h-full object-contain"
           />
         ) : (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#1a1917] text-[#57534e]">
