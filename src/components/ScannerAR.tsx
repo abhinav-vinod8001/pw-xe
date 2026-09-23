@@ -10,6 +10,7 @@ import {
 import { scrubPIIWithDetails } from '@/lib/scrubPII';
 import { saveContract } from '@/lib/db';
 import { RISK_CONFIG, type RiskLevel } from '@/lib/constants';
+import { getAnalyzeUrl } from '@/lib/api';
 
 interface BBox { x0: number; y0: number; x1: number; y1: number; }
 
@@ -106,7 +107,7 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
       }
       abortControllerRef.current = new AbortController();
 
-      const res = await fetch('/api/analyze', {
+      const res = await fetch(getAnalyzeUrl(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: scrubbed, mode: 'scan' }),

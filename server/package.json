@@ -1,0 +1,14 @@
+{
+  "name": "lexar-backend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.0",
+    "groq-sdk": "^0.8.0"
+  }
+}

@@ -9,6 +9,7 @@ import {
 import { scrubPIIWithDetails } from '@/lib/scrubPII';
 import { saveContract } from '@/lib/db';
 import { RISK_CONFIG, type Clause } from '@/lib/constants';
+import { getAnalyzeUrl } from '@/lib/api';
 
 interface DocumentUploadProps {
   onClose: () => void;
@@ -109,7 +110,7 @@ export default function DocumentUpload({ onClose, onSaved }: DocumentUploadProps
     abortControllerRef.current = new AbortController();
     
     try {
-      const res = await fetch('/api/analyze', {
+      const res = await fetch(getAnalyzeUrl(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: scrubbedText, mode: 'pdf', fileName }),
