@@ -73,7 +73,8 @@ Risk level guidelines:
 - YELLOW (Moderate Risk): Clauses that require careful review but aren't necessarily predatory (e.g., unusual governing law, tight indemnification loops, non-standard warranty disclaimers).
 - GREEN (Standard/Low Risk): Customary clauses expected for the document type (e.g., confidentiality in an NDA, standard definitions, recitals, severability, mutual obligations).
 
-Return ONLY valid JSON. Extract up to 10 most important clauses. Preserve exact text from the document.`;
+Return ONLY valid JSON. Extract up to 10 key clauses. You MUST include a balanced mix of RED, YELLOW, and GREEN clauses (if they exist in the text) so the user sees both the risky and the standard/safe parts of their document. Preserve exact text from the document.`;
+
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
