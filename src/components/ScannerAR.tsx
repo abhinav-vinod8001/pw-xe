@@ -1,11 +1,10 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import Webcam from 'react-webcam';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Camera, X, Loader2, Shield, CheckCircle,
-  Save, FlipHorizontal, AlertTriangle
+  Save, AlertTriangle, Upload
 } from 'lucide-react';
 import { scrubPIIWithDetails } from '@/lib/scrubPII';
 import { saveContract } from '@/lib/db';
@@ -17,14 +16,7 @@ interface ScannerARProps { onClose: () => void; }
 type ScannerStep = 'camera' | 'analyzing' | 'result';
 
 export default function ScannerAR({ onClose }: ScannerARProps) {
-  const webcamRef = useRef<Webcam>(null);
   const [step, setStep] = useState<ScannerStep>('camera');
-  
-  // Camera State
-  const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
-  const [hasCamera, setHasCamera] = useState(true);
-  const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
-  const [activeDeviceId, setActiveDeviceId] = useState<string | undefined>();
   
   // OCR & Analysis State
   const [ocrProgress, setOcrProgress] = useState(0);
@@ -33,16 +25,12 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
   const [clauses, setClauses] = useState<Clause[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
 
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    // Get all video devices to allow switching if ultrawide is selected
-    navigator.mediaDevices.enumerateDevices().then((devices) => {
-      const vids = devices.filter((device) => device.kind === 'videoinput');
-      setVideoDevices(vids);
-    }).catch(() => { /* ignore */ });
-    
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
@@ -51,41 +39,28 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       if (abortControllerRef.current) abortControllerRef.current.abort();
+      if (previewImage) URL.revokeObjectURL(previewImage);
     };
-  }, [onClose]);
+  }, [onClose, previewImage]);
 
-  const cycleCamera = () => {
-    if (videoDevices.length <= 1) {
-      setFacingMode(f => f === 'environment' ? 'user' : 'environment');
-      return;
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const url = URL.createObjectURL(file);
+      setPreviewImage(url);
+      captureAndScan(file);
     }
-    
-    const currentIndex = videoDevices.findIndex(d => d.deviceId === activeDeviceId);
-    const nextIndex = (currentIndex + 1) % videoDevices.length;
-    setActiveDeviceId(videoDevices[nextIndex].deviceId);
-    
-    // Also toggle facing mode as fallback
-    setFacingMode(f => f === 'environment' ? 'user' : 'environment');
   };
 
-  const captureAndScan = useCallback(async () => {
-    if (!webcamRef.current) return;
+  const captureAndScan = useCallback(async (imageFile: File) => {
     setStep('analyzing');
     setError(null);
     setClauses([]);
     setOcrProgress(0);
 
-    // Capture at high resolution
-    const img = webcamRef.current.getScreenshot();
-    if (!img) {
-      setError('Could not capture image. Grant camera permissions and try again.');
-      setStep('camera');
-      return;
-    }
-
     try {
       const Tesseract = await import('tesseract.js');
-      const { data } = await Tesseract.recognize(img, 'eng', {
+      const { data } = await Tesseract.recognize(imageFile, 'eng', {
         logger: (m: { status: string; progress: number }) => {
           if (m.status === 'recognizing text') setOcrProgress(Math.round(m.progress * 100));
         },
@@ -93,7 +68,7 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
 
       const extracted = data.text.trim();
       if (!extracted || extracted.length < 20) {
-        throw new Error('No readable text detected. Hold the camera steady over the document with good lighting.');
+        throw new Error('No readable text detected. Please ensure the document is well-lit and in focus.');
       }
 
       setRawText(extracted);
@@ -123,16 +98,20 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
     } catch (err: any) {
       if (err.name === 'AbortError') return;
       console.error('Scan error:', err);
-      setError(err.message || 'Scan failed. Please try again.');
+      setError(err.message || 'Analysis failed. Please try again.');
       setStep('camera');
+      if (previewImage) {
+        URL.revokeObjectURL(previewImage);
+        setPreviewImage(null);
+      }
     }
-  }, []);
+  }, [previewImage]);
 
   const handleSave = async () => {
     if (!rawText || clauses.length === 0) return;
     try {
       await saveContract({
-        title: `Scan — ${new Date().toLocaleString()}`,
+        title: `Camera Scan — ${new Date().toLocaleString()}`,
         createdAt: new Date(),
         documentType: 'scan',
         rawText,
@@ -148,11 +127,6 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
   const redClauses = clauses.filter(c => c.riskLevel === 'RED');
   const yellowClauses = clauses.filter(c => c.riskLevel === 'YELLOW');
   const greenClauses = clauses.filter(c => c.riskLevel === 'GREEN');
-
-  // Video constraints
-  const videoConstraints: MediaTrackConstraints = activeDeviceId 
-    ? { deviceId: { exact: activeDeviceId }, width: { ideal: 3840 }, height: { ideal: 2160 } }
-    : { facingMode, width: { ideal: 3840 }, height: { ideal: 2160 } };
 
   return (
     <div className="fixed inset-0 z-50 bg-[#f8f7f4] flex flex-col overflow-y-auto">
@@ -177,54 +151,49 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
 
         <AnimatePresence mode="wait">
           {step === 'camera' && (
-            <motion.div key="camera" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex-1 flex flex-col">
-              <div className="relative flex-1 rounded-2xl overflow-hidden bg-black shadow-inner min-h-[50vh]">
-                {hasCamera ? (
-                  <Webcam
-                    key={activeDeviceId || facingMode}
-                    ref={webcamRef}
-                    audio={false}
-                    screenshotFormat="image/jpeg"
-                    screenshotQuality={0.95}
-                    videoConstraints={videoConstraints}
-                    onUserMedia={() => setHasCamera(true)}
-                    onUserMediaError={() => setHasCamera(false)}
-                    className="absolute inset-0 w-full h-full object-cover"
-                  />
-                ) : (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#1a1917] text-[#57534e]">
-                    <Camera className="w-10 h-10 opacity-30" />
-                    <p role="alert" className="text-sm text-center text-[#a8a29e] px-8">Camera unavailable.</p>
+            <motion.div key="camera" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex-1 flex flex-col justify-center items-center py-10">
+              
+              <input 
+                type="file" 
+                accept="image/*" 
+                capture="environment" 
+                ref={fileInputRef}
+                className="hidden" 
+                onChange={handleFileChange}
+              />
+
+              <div className="text-center max-w-sm w-full space-y-6">
+                <div className="bg-white p-8 rounded-3xl shadow-sm border border-[#e5e3df] flex flex-col items-center gap-4">
+                  <div className="w-16 h-16 bg-[#f8f7f4] rounded-full flex items-center justify-center text-[#1a1917]">
+                    <Camera className="w-8 h-8" />
                   </div>
-                )}
-
-                {/* Camera controls overlay */}
-                <div className="absolute top-4 right-4 z-10">
-                  {videoDevices.length > 1 && (
-                    <button
-                      onClick={cycleCamera}
-                      className="p-3 rounded-full bg-black/40 backdrop-blur hover:bg-black/60 text-white transition-colors"
-                      title="Switch Camera Lens"
-                    >
-                      <FlipHorizontal className="w-5 h-5" />
-                    </button>
-                  )}
+                  <div>
+                    <h3 className="text-lg font-semibold text-[#1a1917]">Take a Photo</h3>
+                    <p className="text-sm text-[#57534e] mt-1">Use your native camera app to capture a high-quality photo of the document.</p>
+                  </div>
                 </div>
-                
-                <div className="absolute inset-8 border-2 border-white/30 rounded-2xl pointer-events-none flex items-center justify-center">
-                   <span className="bg-black/50 backdrop-blur px-3 py-1 rounded-full text-white/80 text-xs">Align document in frame</span>
-                </div>
-              </div>
 
-              <div className="mt-6">
                 <button
-                  id="btn-capture-scan"
-                  onClick={captureAndScan}
-                  disabled={!hasCamera}
-                  className="w-full flex items-center justify-center gap-2 py-4 rounded-xl bg-[#1a1917] hover:bg-[#2a2926] disabled:opacity-40 text-white font-medium text-sm transition-colors shadow-lg"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-full flex items-center justify-center gap-2 py-4 rounded-xl bg-[#1a1917] hover:bg-[#2a2926] text-white font-medium text-base transition-colors shadow-lg"
                 >
                   <Camera className="w-5 h-5" />
-                  Capture Photo
+                  Open Camera
+                </button>
+                
+                <button
+                  onClick={() => {
+                    if (fileInputRef.current) {
+                      fileInputRef.current.removeAttribute('capture');
+                      fileInputRef.current.click();
+                      // Re-add it after a short delay so the main button still uses camera
+                      setTimeout(() => fileInputRef.current?.setAttribute('capture', 'environment'), 1000);
+                    }
+                  }}
+                  className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-white border border-[#e5e3df] hover:bg-[#f8f7f4] text-[#1a1917] font-medium text-sm transition-colors"
+                >
+                  <Upload className="w-4 h-4" />
+                  Upload from Gallery
                 </button>
               </div>
             </motion.div>
@@ -232,10 +201,18 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
 
           {step === 'analyzing' && (
             <motion.div key="analyzing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex-1 flex flex-col items-center justify-center gap-6 py-20">
-              <Loader2 className="w-8 h-8 animate-spin text-[#57534e]" />
+              {previewImage && (
+                <div className="relative w-48 h-64 rounded-2xl overflow-hidden shadow-md mb-4 border border-[#e5e3df] bg-white">
+                  <img src={previewImage} alt="Document Preview" className="w-full h-full object-cover opacity-60 grayscale" />
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/10 backdrop-blur-sm">
+                    <Loader2 className="w-10 h-10 animate-spin text-white drop-shadow-md" />
+                  </div>
+                </div>
+              )}
+              
               <div className="text-center">
                 <p className="font-medium text-[#1a1917] text-base">
-                  {ocrProgress < 100 ? `Reading text… ${ocrProgress}%` : 'Analyzing clauses with AI…'}
+                  {ocrProgress < 100 ? `Extracting text… ${ocrProgress}%` : 'Analyzing risk clauses…'}
                 </p>
                 <div className="flex items-center justify-center gap-1.5 mt-2 text-[#57534e] text-xs">
                   <Shield className="w-3.5 h-3.5 text-emerald-600" />
@@ -252,7 +229,14 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
             <motion.div key="result" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6 pb-12">
               <div className="flex items-center justify-between">
                 <h2 className="text-lg font-semibold text-[#1a1917]">Scan Results</h2>
-                <button onClick={() => { setStep('camera'); setSaved(false); }} className="text-sm font-medium text-[#57534e] hover:text-[#1a1917]">
+                <button onClick={() => { 
+                  setStep('camera'); 
+                  setSaved(false);
+                  if (previewImage) {
+                    URL.revokeObjectURL(previewImage);
+                    setPreviewImage(null);
+                  }
+                }} className="text-sm font-medium text-[#57534e] hover:text-[#1a1917]">
                   Scan another
                 </button>
               </div>
