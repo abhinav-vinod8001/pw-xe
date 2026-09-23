@@ -120,19 +120,39 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         const { default: Groq } = await import('groq-sdk');
         const groq = new Groq({ apiKey });
 
-        const completion = await groq.chat.completions.create({
-          model: 'llama-3.1-8b-instant',
-          messages: [
-            { role: 'system', content: GROQ_SYSTEM_PROMPT },
-            {
-              role: 'user',
-              content: `Analyze this legal document${safeFileName ? ` (${safeFileName})` : ''} scanned via ${mode} mode:\n\n${truncatedText}`,
-            },
-          ],
-          temperature: 0.1,
-          max_tokens: 4096,
-          response_format: { type: 'json_object' },
-        });
+        const modelsToTry = [
+          process.env.GROQ_MODEL || 'openai/gpt-oss-120b',
+          'openai/gpt-oss-20b',
+        ];
+
+        let completion;
+        let lastError: any;
+
+        for (const model of modelsToTry) {
+          try {
+            completion = await groq.chat.completions.create({
+              model,
+              messages: [
+                { role: 'system', content: GROQ_SYSTEM_PROMPT },
+                {
+                  role: 'user',
+                  content: `Analyze this legal document${safeFileName ? ` (${safeFileName})` : ''} scanned via ${mode} mode:\n\n${truncatedText}`,
+                },
+              ],
+              temperature: 0.1,
+              max_tokens: 4096,
+              response_format: { type: 'json_object' },
+            });
+            if (completion) break;
+          } catch (modelErr: any) {
+            console.warn(`Groq model ${model} attempt failed:`, modelErr?.message || modelErr);
+            lastError = modelErr;
+          }
+        }
+
+        if (!completion) {
+          throw lastError || new Error('Failed to get a response from Groq models.');
+        }
 
         const rawContent = completion.choices[0]?.message?.content || '{}';
         const parsed = JSON.parse(rawContent) as AnalyzeResponse;

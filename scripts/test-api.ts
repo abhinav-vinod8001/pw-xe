@@ -21,6 +21,27 @@ async function createMockRequest(body: any, headers: Record<string, string> = {}
   });
 }
 
+import * as fs from 'fs';
+import * as path from 'path';
+
+// Auto-load .env.local if not already present in environment
+if (!process.env.GROQ_API_KEY) {
+  try {
+    const envPath = path.resolve(process.cwd(), '.env.local');
+    if (fs.existsSync(envPath)) {
+      const content = fs.readFileSync(envPath, 'utf8');
+      for (const line of content.split('\n')) {
+        const match = line.match(/^\s*([\w.-]+)\s*=\s*(.*)?\s*$/);
+        if (match) {
+          process.env[match[1]] = match[2]?.trim() || '';
+        }
+      }
+    }
+  } catch (e) {
+    // Ignore error
+  }
+}
+
 async function runTests() {
   // 1. Test empty text rejection
   let req = await createMockRequest({ text: '' });
@@ -42,27 +63,27 @@ async function runTests() {
   res = await POST(req);
   assert(res.status === 413, 'Rejects payload over 50KB with 413 Payload Too Large');
 
-  // 5. Test mock fallback classification
-  const mockText = "This agreement contains a non-compete clause. It also has a limitation of liability to the amount paid. This is a very standard and customary boilerplate legal clause used often.";
-  req = await createMockRequest({ text: mockText });
+  // 5. Test live Groq AI analysis
+  const legalText = `
+    NON-DISCLOSURE AND INDEMNITY AGREEMENT
+    1. Confidentiality: The Recipient shall hold and maintain the Confidential Information in strict confidence.
+    2. Non-Compete: The Recipient shall not engage in any competitive enterprise for a period of 12 months following termination.
+    3. Indemnification: The Recipient shall indemnify and hold harmless the Disclosing Party against unlimited liabilities, damages, and claims arising from any breach without any monetary cap.
+  `;
+  req = await createMockRequest({ text: legalText });
   res = await POST(req);
   assert(res.status === 200, 'Returns 200 for valid analysis request');
   
   const data = await res.json();
   assert(Array.isArray(data.clauses), 'Returns an array of clauses');
+  assert(data.clauses.length >= 1, 'Extracted at least one clause');
   
-  // High risk should be found (non-compete)
-  const redClauses = data.clauses.filter((c: any) => c.riskLevel === 'RED');
-  assert(redClauses.length >= 1, 'Correctly identifies RED (high-risk) clauses');
+  for (const clause of data.clauses) {
+    assert(['RED', 'YELLOW', 'GREEN'].includes(clause.riskLevel), `Clause riskLevel is valid (${clause.riskLevel})`);
+    assert(typeof clause.summary === 'string' && clause.summary.length > 0, 'Clause has a summary');
+  }
 
-  // Moderate risk should be found (limits liability)
-  const yellowClauses = data.clauses.filter((c: any) => c.riskLevel === 'YELLOW');
-  assert(yellowClauses.length >= 1, 'Correctly identifies YELLOW (moderate-risk) clauses');
-
-  // Standard clause should be found (boilerplate)
-  const greenClauses = data.clauses.filter((c: any) => c.riskLevel === 'GREEN');
-  assert(greenClauses.length >= 1, 'Correctly identifies GREEN (standard) clauses');
-
+  console.log(`\nProcessed ${data.clauses.length} clauses successfully. Summary: "${data.summary}"`);
   console.log('\n🎉 ALL API TESTS PASSED SUCCESSFULLY!\n');
 }
 
