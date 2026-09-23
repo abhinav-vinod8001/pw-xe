@@ -46,72 +46,7 @@ function sanitizeFileName(name?: string): string {
   return name.replace(/[^a-zA-Z0-9.\-_ ]/g, '').slice(0, 100);
 }
 
-// Heuristic keyword-based mock classifier used when GROQ_API_KEY is missing
-function mockClassifyClauses(text: string): AnalyzeResponse {
-  const HIGH_RISK_KEYWORDS = [
-    'unlimited liability', 'indemnif', 'hold harmless', 'waive all rights',
-    'non-compete', 'non compete', 'irrevocable', 'perpetual license',
-    'at any time without notice', 'sole discretion', 'unilateral',
-    'liquidated damages', 'penalty', 'arbitration mandatory',
-    'class action waiver', 'termination for convenience',
-    'all intellectual property', 'assign all rights',
-  ];
-  const MODERATE_RISK_KEYWORDS = [
-    'exclusive', 'limitation of liability', 'as is', 'no warranty',
-    'automatic renewal', 'auto-renew', 'change without notice',
-    'right to modify', 'governing law', 'jurisdiction',
-    'confidential', 'nondisclosure', 'retain the right',
-    'reasonable fee', 'subject to change',
-  ];
-
-  const sentences = text
-    .split(/[.!?;\n]+/)
-    .map(s => s.trim())
-    .filter(s => s.length > 20 && s.length < 1500);
-
-  const clauses: Clause[] = [];
-  const seen = new Set<string>();
-
-  for (const sentence of sentences) {
-    const lower = sentence.toLowerCase();
-    const key = lower.slice(0, 60);
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    const isHighRisk = HIGH_RISK_KEYWORDS.some(kw => lower.includes(kw));
-    const isModerate = !isHighRisk && MODERATE_RISK_KEYWORDS.some(kw => lower.includes(kw));
-
-    if (isHighRisk) {
-      clauses.push({
-        text: sentence,
-        riskLevel: 'RED',
-        summary: 'This clause may significantly limit your rights, expose you to unbounded liability, or grant excessive power to the other party. Review with a licensed attorney.',
-        category: HIGH_RISK_KEYWORDS.find(kw => lower.includes(kw))?.replace(/-/g, ' ') || 'High-Risk Clause',
-      });
-    } else if (isModerate) {
-      clauses.push({
-        text: sentence,
-        riskLevel: 'YELLOW',
-        summary: 'This clause warrants careful review. It may restrict your options, modify warranty rights, or impose conditions that should be understood before signing.',
-        category: MODERATE_RISK_KEYWORDS.find(kw => lower.includes(kw))?.replace(/-/g, ' ') || 'Moderate Clause',
-      });
-    } else if (clauses.length < 8 && sentence.length > 40) {
-      clauses.push({
-        text: sentence,
-        riskLevel: 'GREEN',
-        summary: 'Standard boilerplate clause with low risk. Typical legal language used in most agreements.',
-        category: 'Standard Clause',
-      });
-    }
-
-    if (clauses.length >= 15) break;
-  }
-
-  return {
-    clauses,
-    summary: `Analyzed ${sentences.length} text segments. Found ${clauses.filter(c => c.riskLevel === 'RED').length} high-risk, ${clauses.filter(c => c.riskLevel === 'YELLOW').length} moderate-risk, and ${clauses.filter(c => c.riskLevel === 'GREEN').length} standard clauses.`,
-  };
-}
+// No mock classifier — forcing real Groq API usage
 
 const GROQ_SYSTEM_PROMPT = `You are LexAR, an elite, pragmatic legal AI assistant. Your task is to analyze the provided legal text and extract its clauses, categorizing them by risk level.
 
@@ -215,15 +150,19 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         });
 
         return NextResponse.json(parsed);
-      } catch (groqError) {
-        console.error('Groq API error, falling back to mock:', groqError);
-        // Fall through to mock
+      } catch (groqError: any) {
+        console.error('Groq API error:', groqError);
+        return NextResponse.json(
+          { error: `Groq AI Error: ${groqError.message}` },
+          { status: 502 }
+        );
       }
+    } else {
+      return NextResponse.json(
+        { error: 'GROQ_API_KEY environment variable is missing on the server.' },
+        { status: 500 }
+      );
     }
-
-    // --- Mock Fallback path ---
-    const mockResult = mockClassifyClauses(truncatedText);
-    return NextResponse.json({ ...mockResult, _source: 'mock' });
   } catch (err) {
     console.error('Analyze route error:', err);
     return NextResponse.json(
