@@ -4,55 +4,44 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import Webcam from 'react-webcam';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Camera, X, Loader2, Shield, AlertTriangle, CheckCircle,
-  Zap, Save, FlipHorizontal
+  Camera, X, Loader2, Shield, CheckCircle,
+  Save, FlipHorizontal, AlertTriangle
 } from 'lucide-react';
 import { scrubPIIWithDetails } from '@/lib/scrubPII';
 import { saveContract } from '@/lib/db';
-import { RISK_CONFIG, type RiskLevel } from '@/lib/constants';
+import { RISK_CONFIG, type Clause } from '@/lib/constants';
 import { getAnalyzeUrl } from '@/lib/api';
-
-interface BBox { x0: number; y0: number; x1: number; y1: number; }
-
-interface ScannedClause {
-  text: string;
-  riskLevel: RiskLevel;
-  summary: string;
-  bbox?: BBox;
-}
 
 interface ScannerARProps { onClose: () => void; }
 
-
+type ScannerStep = 'camera' | 'analyzing' | 'result';
 
 export default function ScannerAR({ onClose }: ScannerARProps) {
   const webcamRef = useRef<Webcam>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const [step, setStep] = useState<ScannerStep>('camera');
+  
+  // Camera State
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
-  const [scanning, setScanning] = useState(false);
-  const [clauses, setClauses] = useState<ScannedClause[]>([]);
-  const [selected, setSelected] = useState<ScannedClause | null>(null);
-  const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
+  const [hasCamera, setHasCamera] = useState(true);
+  const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
+  const [activeDeviceId, setActiveDeviceId] = useState<string | undefined>();
+  
+  // OCR & Analysis State
   const [ocrProgress, setOcrProgress] = useState(0);
   const [rawText, setRawText] = useState('');
   const [scrubbedText, setScrubbedText] = useState('');
-  const [saved, setSaved] = useState(false);
+  const [clauses, setClauses] = useState<Clause[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [hasCamera, setHasCamera] = useState(true);
-  const [videoDevices, setVideoDevices] = useState(0);
+  const [saved, setSaved] = useState(false);
 
   const abortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    const update = () => {
-      if (containerRef.current) {
-        const r = containerRef.current.getBoundingClientRect();
-        setContainerSize({ w: r.width, h: r.height });
-      }
-    };
-    update();
-    const obs = new ResizeObserver(update);
-    if (containerRef.current) obs.observe(containerRef.current);
+    // Get all video devices to allow switching if ultrawide is selected
+    navigator.mediaDevices.enumerateDevices().then((devices) => {
+      const vids = devices.filter((device) => device.kind === 'videoinput');
+      setVideoDevices(vids);
+    }).catch(() => { /* ignore */ });
     
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -61,25 +50,36 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
     
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
-      obs.disconnect();
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
+      if (abortControllerRef.current) abortControllerRef.current.abort();
     };
-  }, []);
+  }, [onClose]);
+
+  const cycleCamera = () => {
+    if (videoDevices.length <= 1) {
+      setFacingMode(f => f === 'environment' ? 'user' : 'environment');
+      return;
+    }
+    
+    const currentIndex = videoDevices.findIndex(d => d.deviceId === activeDeviceId);
+    const nextIndex = (currentIndex + 1) % videoDevices.length;
+    setActiveDeviceId(videoDevices[nextIndex].deviceId);
+    
+    // Also toggle facing mode as fallback
+    setFacingMode(f => f === 'environment' ? 'user' : 'environment');
+  };
 
   const captureAndScan = useCallback(async () => {
     if (!webcamRef.current) return;
-    setScanning(true);
+    setStep('analyzing');
     setError(null);
     setClauses([]);
     setOcrProgress(0);
 
-    // Capture at native resolution for maximum OCR quality
+    // Capture at high resolution
     const img = webcamRef.current.getScreenshot();
     if (!img) {
       setError('Could not capture image. Grant camera permissions and try again.');
-      setScanning(false);
+      setStep('camera');
       return;
     }
 
@@ -93,9 +93,7 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
 
       const extracted = data.text.trim();
       if (!extracted || extracted.length < 20) {
-        setError('No readable text detected. Hold the camera steady over the document with good lighting.');
-        setScanning(false);
-        return;
+        throw new Error('No readable text detected. Hold the camera steady over the document with good lighting.');
       }
 
       setRawText(extracted);
@@ -120,36 +118,18 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
       }
 
       const result = await res.json();
-      const apiClauses: ScannedClause[] = result.clauses || [];
-
-      interface TessLine { text: string; bbox: BBox; }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const lines: TessLine[] = ((data as any).lines as TessLine[]) || [];
-
-      const mapped = apiClauses.map((clause, i) => {
-        const match = lines.find((l: TessLine) =>
-          clause.text && l.text && l.text.toLowerCase().includes(clause.text.slice(0, 20).toLowerCase())
-        );
-        const fallback = lines[i % Math.max(lines.length, 1)];
-        const bbox: BBox = match?.bbox || fallback?.bbox || {
-          x0: 50 + (i % 2) * 200, y0: 80 + i * 70,
-          x1: 300 + (i % 2) * 200, y1: 140 + i * 70,
-        };
-        return { ...clause, bbox };
-      });
-
-      setClauses(mapped);
+      setClauses(result.clauses || []);
+      setStep('result');
     } catch (err: any) {
       if (err.name === 'AbortError') return;
       console.error('Scan error:', err);
       setError(err.message || 'Scan failed. Please try again.');
-    } finally {
-      setScanning(false);
+      setStep('camera');
     }
   }, []);
 
   const handleSave = async () => {
-    if (!rawText) return;
+    if (!rawText || clauses.length === 0) return;
     try {
       await saveContract({
         title: `Scan — ${new Date().toLocaleString()}`,
@@ -157,7 +137,7 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
         documentType: 'scan',
         rawText,
         scrubbedText,
-        clauses: clauses.map(c => ({ text: c.text, riskLevel: c.riskLevel, summary: c.summary })),
+        clauses: clauses.map(c => ({ text: c.text, riskLevel: c.riskLevel, summary: c.summary, category: c.category })),
         overallRisk: clauses.some(c => c.riskLevel === 'RED') ? 'RED'
           : clauses.some(c => c.riskLevel === 'YELLOW') ? 'YELLOW' : 'GREEN',
       });
@@ -165,205 +145,174 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
     } catch { /* ignore */ }
   };
 
-  // Dynamic AR scaling based on actual video stream dimensions
-  const videoEl = webcamRef.current?.video;
-  const nativeW = videoEl?.videoWidth || 1280;
-  const nativeH = videoEl?.videoHeight || 720;
+  const redClauses = clauses.filter(c => c.riskLevel === 'RED');
+  const yellowClauses = clauses.filter(c => c.riskLevel === 'YELLOW');
+  const greenClauses = clauses.filter(c => c.riskLevel === 'GREEN');
 
-  // object-cover math: compute rendered size and crop offsets for AR alignment
-  const containerAspect = containerSize.w / (containerSize.h || 1);
-  const videoAspect = nativeW / (nativeH || 1);
-  let renderW: number, renderH: number, offsetX: number, offsetY: number;
-
-  if (videoAspect > containerAspect) {
-    renderH = containerSize.h;
-    renderW = containerSize.h * videoAspect;
-    offsetX = (renderW - containerSize.w) / 2;
-    offsetY = 0;
-  } else {
-    renderW = containerSize.w;
-    renderH = containerSize.w / videoAspect;
-    offsetX = 0;
-    offsetY = (renderH - containerSize.h) / 2;
-  }
-
-  const sx = (x: number) => (x / nativeW) * renderW - offsetX;
-  const sy = (y: number) => (y / nativeH) * renderH - offsetY;
-
-  // Request high resolution to force the main camera (not ultrawide)
-  const videoConstraints: MediaTrackConstraints = {
-    facingMode,
-    width: { ideal: 3840, min: 1280 },
-    height: { ideal: 2160, min: 720 },
-  };
+  // Video constraints
+  const videoConstraints: MediaTrackConstraints = activeDeviceId 
+    ? { deviceId: { exact: activeDeviceId }, width: { ideal: 3840 }, height: { ideal: 2160 } }
+    : { facingMode, width: { ideal: 3840 }, height: { ideal: 2160 } };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black flex flex-col">
-      {/* Camera header */}
-      <div className="relative z-10 flex items-center justify-between px-4 py-3 bg-gradient-to-b from-black/70 to-transparent">
-        <div className="flex items-center gap-2 text-white">
+    <div className="fixed inset-0 z-50 bg-[#f8f7f4] flex flex-col overflow-y-auto">
+      {/* Header */}
+      <div className="sticky top-0 z-20 flex items-center justify-between px-4 py-3 bg-[#f8f7f4] border-b border-[#e5e3df]">
+        <div className="flex items-center gap-2 text-[#1a1917]">
           <Camera className="w-4 h-4 opacity-80" />
           <span className="text-sm font-medium">Scan Document</span>
         </div>
-        <div className="flex items-center gap-2">
-          {clauses.length > 0 && !saved && (
-            <button
-              onClick={handleSave}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-white text-[#1a1917] text-xs font-medium rounded-full transition-colors hover:bg-gray-100"
-            >
-              <Save className="w-3 h-3" /> Save
-            </button>
-          )}
-          {saved && (
-            <span className="flex items-center gap-1.5 px-3 py-1.5 bg-green-100 text-green-700 text-xs font-medium rounded-full">
-              <CheckCircle className="w-3 h-3" /> Saved
-            </span>
-          )}
-          {videoDevices > 1 && (
-            <button
-              onClick={() => setFacingMode(f => f === 'environment' ? 'user' : 'environment')}
-              className="p-2 rounded-full bg-white/15 hover:bg-white/25 text-white transition-colors"
-            >
-              <FlipHorizontal className="w-4 h-4" />
-            </button>
-          )}
-          <button onClick={onClose} className="p-2 rounded-full bg-white/15 hover:bg-white/25 text-white transition-colors">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+        <button onClick={onClose} className="p-2 rounded-full hover:bg-[#e5e3df] text-[#1a1917] transition-colors">
+          <X className="w-4 h-4" />
+        </button>
       </div>
 
-      {/* Camera feed */}
-      <div ref={containerRef} className="relative flex-1 overflow-hidden bg-black">
-        {hasCamera ? (
-          <Webcam
-            key={facingMode}
-            ref={webcamRef}
-            audio={false}
-            screenshotFormat="image/jpeg"
-            screenshotQuality={0.95}
-            videoConstraints={videoConstraints}
-            onUserMedia={() => {
-              setHasCamera(true);
-              navigator.mediaDevices.enumerateDevices().then((devices) => {
-                const videoInputs = devices.filter((device) => device.kind === 'videoinput');
-                setVideoDevices(videoInputs.length);
-              }).catch(() => { /* ignore */ });
-            }}
-            onUserMediaError={() => setHasCamera(false)}
-            className="absolute inset-0 w-full h-full object-cover"
-          />
-        ) : (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#1a1917] text-[#57534e]">
-            <Camera className="w-10 h-10 opacity-30" />
-            <p role="alert" className="text-sm text-center text-[#a8a29e] px-8">Camera unavailable. It may be in use by another app, lacking permissions, or disconnected.</p>
+      <div className="flex-1 max-w-2xl mx-auto w-full p-4 flex flex-col">
+        {error && (
+          <div className="mb-4 bg-red-50 border border-red-200 text-red-700 text-xs px-3 py-2 rounded-xl flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            <p>{error}</p>
           </div>
         )}
 
-        {/* AR overlays */}
-        {clauses.map((clause, i) => {
-          if (!clause.bbox) return null;
-          return (
-            <motion.div
-              key={i}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ delay: i * 0.08 }}
-              className={`absolute border-2 rounded cursor-pointer ${RISK_CONFIG[clause.riskLevel].overlay}`}
-              style={{
-                left: sx(clause.bbox.x0),
-                top: sy(clause.bbox.y0),
-                width: Math.max(sx(clause.bbox.x1) - sx(clause.bbox.x0), 80),
-                height: Math.max(sy(clause.bbox.y1) - sy(clause.bbox.y0), 22),
-              }}
-              onClick={() => setSelected(clause)}
-            />
-          );
-        })}
+        <AnimatePresence mode="wait">
+          {step === 'camera' && (
+            <motion.div key="camera" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex-1 flex flex-col">
+              <div className="relative flex-1 rounded-2xl overflow-hidden bg-black shadow-inner min-h-[50vh]">
+                {hasCamera ? (
+                  <Webcam
+                    key={activeDeviceId || facingMode}
+                    ref={webcamRef}
+                    audio={false}
+                    screenshotFormat="image/jpeg"
+                    screenshotQuality={0.95}
+                    videoConstraints={videoConstraints}
+                    onUserMedia={() => setHasCamera(true)}
+                    onUserMediaError={() => setHasCamera(false)}
+                    className="absolute inset-0 w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#1a1917] text-[#57534e]">
+                    <Camera className="w-10 h-10 opacity-30" />
+                    <p role="alert" className="text-sm text-center text-[#a8a29e] px-8">Camera unavailable.</p>
+                  </div>
+                )}
 
-        {/* Scan guide frame */}
-        {!scanning && clauses.length === 0 && hasCamera && (
-          <div className="absolute inset-8 border border-white/20 rounded-2xl pointer-events-none">
-            <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white/40 text-xs text-center">
-              Align document within frame
-            </span>
-          </div>
-        )}
-
-        {/* OCR progress */}
-        <AnimatePresence>
-          {scanning && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="absolute inset-0 bg-black/55 flex flex-col items-center justify-center gap-4"
-            >
-              <Loader2 className="w-7 h-7 animate-spin text-white" />
-              <div className="text-center">
-                <p className="text-white text-sm font-medium">
-                  {ocrProgress < 100 ? `Reading text… ${ocrProgress}%` : 'Analyzing…'}
-                </p>
-                <p className="text-white/50 text-xs mt-1 flex items-center justify-center gap-1">
-                  <Shield className="w-3 h-3" /> PII scrubbing active
-                </p>
+                {/* Camera controls overlay */}
+                <div className="absolute top-4 right-4 z-10">
+                  {videoDevices.length > 1 && (
+                    <button
+                      onClick={cycleCamera}
+                      className="p-3 rounded-full bg-black/40 backdrop-blur hover:bg-black/60 text-white transition-colors"
+                      title="Switch Camera Lens"
+                    >
+                      <FlipHorizontal className="w-5 h-5" />
+                    </button>
+                  )}
+                </div>
+                
+                <div className="absolute inset-8 border-2 border-white/30 rounded-2xl pointer-events-none flex items-center justify-center">
+                   <span className="bg-black/50 backdrop-blur px-3 py-1 rounded-full text-white/80 text-xs">Align document in frame</span>
+                </div>
               </div>
-              <div 
-                className="w-36 h-1 bg-white/20 rounded-full overflow-hidden"
-                role="progressbar"
-                aria-valuenow={ocrProgress}
-                aria-valuemin={0}
-                aria-valuemax={100}
-              >
-                <motion.div className="h-full bg-white rounded-full" animate={{ width: `${ocrProgress}%` }} />
+
+              <div className="mt-6">
+                <button
+                  id="btn-capture-scan"
+                  onClick={captureAndScan}
+                  disabled={!hasCamera}
+                  className="w-full flex items-center justify-center gap-2 py-4 rounded-xl bg-[#1a1917] hover:bg-[#2a2926] disabled:opacity-40 text-white font-medium text-sm transition-colors shadow-lg"
+                >
+                  <Camera className="w-5 h-5" />
+                  Capture Photo
+                </button>
+              </div>
+            </motion.div>
+          )}
+
+          {step === 'analyzing' && (
+            <motion.div key="analyzing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex-1 flex flex-col items-center justify-center gap-6 py-20">
+              <Loader2 className="w-8 h-8 animate-spin text-[#57534e]" />
+              <div className="text-center">
+                <p className="font-medium text-[#1a1917] text-base">
+                  {ocrProgress < 100 ? `Reading text… ${ocrProgress}%` : 'Analyzing clauses with AI…'}
+                </p>
+                <div className="flex items-center justify-center gap-1.5 mt-2 text-[#57534e] text-xs">
+                  <Shield className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>PII scrubbing active.</span>
+                </div>
+              </div>
+              <div className="w-48 h-1.5 bg-[#e5e3df] rounded-full overflow-hidden">
+                <motion.div className="h-full bg-[#1a1917] rounded-full" animate={{ width: `${ocrProgress}%` }} transition={{ type: 'spring' }} />
+              </div>
+            </motion.div>
+          )}
+
+          {step === 'result' && (
+            <motion.div key="result" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6 pb-12">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold text-[#1a1917]">Scan Results</h2>
+                <button onClick={() => { setStep('camera'); setSaved(false); }} className="text-sm font-medium text-[#57534e] hover:text-[#1a1917]">
+                  Scan another
+                </button>
+              </div>
+
+              <div className="flex gap-3 text-xs">
+                {[
+                  { count: redClauses.length, label: 'High risk', cls: 'bg-red-50 border-red-200 text-red-700' },
+                  { count: yellowClauses.length, label: 'Review', cls: 'bg-amber-50 border-amber-200 text-amber-700' },
+                  { count: greenClauses.length, label: 'Standard', cls: 'bg-green-50 border-green-200 text-green-700' },
+                ].map(item => (
+                  <div key={item.label} className={`flex-1 text-center py-3 rounded-xl border font-medium ${item.cls}`}>
+                    <div className="text-lg font-semibold">{item.count}</div>
+                    <div className="text-[11px] opacity-80 mt-0.5">{item.label}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="space-y-3">
+                {clauses.map((clause, i) => {
+                  const cfg = RISK_CONFIG[clause.riskLevel];
+                  return (
+                    <motion.div
+                      key={i}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: i * 0.05 }}
+                      className={`border rounded-2xl p-4 bg-white ${cfg.card}`}
+                    >
+                      <div className="flex items-center gap-2 mb-2.5">
+                        <span className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${cfg.badge}`}>
+                          {cfg.icon} {cfg.label}
+                        </span>
+                        {clause.category && (
+                          <span className="text-[#a8a29e] text-xs">{clause.category}</span>
+                        )}
+                      </div>
+                      <p className="text-[#1a1917] text-sm leading-relaxed">{clause.text}</p>
+                      <div className="mt-3 pt-3 border-t border-[#e5e3df]">
+                        <p className="text-[#57534e] text-sm leading-relaxed">{clause.summary}</p>
+                      </div>
+                    </motion.div>
+                  );
+                })}
+              </div>
+
+              <div className="pt-4">
+                {!saved ? (
+                  <button onClick={handleSave} className="w-full flex items-center justify-center gap-2 py-4 rounded-xl bg-[#1a1917] hover:bg-[#2a2926] text-white text-sm font-medium transition-colors shadow-md">
+                    <Save className="w-4 h-4" /> Save to history
+                  </button>
+                ) : (
+                  <div className="flex items-center justify-center gap-2 py-4 rounded-xl bg-green-50 text-green-700 text-sm font-medium border border-green-200">
+                    <CheckCircle className="w-5 h-5" /> Saved successfully
+                  </div>
+                )}
               </div>
             </motion.div>
           )}
         </AnimatePresence>
       </div>
-
-      {/* Bottom controls */}
-      <div className="relative z-10 bg-gradient-to-t from-black/80 to-transparent px-4 pb-10 pt-4">
-        {error && (
-          <p role="alert" className="mb-3 text-center text-xs text-white/70 bg-white/10 rounded-xl px-3 py-2">{error}</p>
-        )}
-        <button
-          id="btn-capture-scan"
-          onClick={captureAndScan}
-          disabled={scanning || !hasCamera}
-          className="w-full flex items-center justify-center gap-2 py-4 rounded-2xl bg-white hover:bg-gray-100 disabled:opacity-40 text-[#1a1917] font-semibold text-sm transition-all active:scale-[0.98]"
-        >
-          {scanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Camera className="w-4 h-4" />}
-          {scanning ? 'Analyzing…' : clauses.length > 0 ? 'Scan again' : 'Capture & analyze'}
-        </button>
-      </div>
-
-      {/* Clause detail drawer */}
-      <AnimatePresence>
-        {selected && (
-          <motion.div
-            initial={{ y: '100%' }}
-            animate={{ y: 0 }}
-            exit={{ y: '100%' }}
-            transition={{ type: 'spring', damping: 30, stiffness: 300 }}
-            className="fixed inset-x-0 bottom-0 z-60 bg-white rounded-t-2xl p-5 pb-10 shadow-2xl"
-            role="dialog"
-            aria-modal="true"
-          >
-            <div className="flex items-start justify-between mb-3">
-              <span className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${RISK_CONFIG[selected.riskLevel].badge}`}>
-                {RISK_CONFIG[selected.riskLevel].icon}
-                {RISK_CONFIG[selected.riskLevel].label}
-              </span>
-              <button onClick={() => setSelected(null)} className="p-1 rounded-lg hover:bg-[#f2f1ee] text-[#57534e]" aria-label="Close clause detail">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <p className="text-[#1a1917] text-sm font-medium leading-relaxed mb-2">{selected.text}</p>
-            <p className="text-[#57534e] text-xs leading-relaxed">{selected.summary}</p>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </div>
   );
 }
