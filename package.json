@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "node .next/standalone/server.js",
+    "start": "HOSTNAME=0.0.0.0 node .next/standalone/server.js",
     "lint": "eslint",
     "test": "npx tsx scripts/test-scrubber.ts && npx tsx scripts/test-api.ts",
     "test:scrubber": "npx tsx scripts/test-scrubber.ts",
