@@ -64,7 +64,6 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
-      // Webcam stream is cleaned up automatically by react-webcam unmount
     };
   }, []);
 
@@ -75,6 +74,7 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
     setClauses([]);
     setOcrProgress(0);
 
+    // Capture at native resolution for maximum OCR quality
     const img = webcamRef.current.getScreenshot();
     if (!img) {
       setError('Could not capture image. Grant camera permissions and try again.');
@@ -92,7 +92,7 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
 
       const extracted = data.text.trim();
       if (!extracted || extracted.length < 20) {
-        setError('No readable text found. Make sure the document is well-lit and clearly framed.');
+        setError('No readable text detected. Hold the camera steady over the document with good lighting.');
         setScanning(false);
         return;
       }
@@ -112,7 +112,12 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
         body: JSON.stringify({ text: scrubbed, mode: 'scan' }),
         signal: abortControllerRef.current.signal,
       });
-      if (!res.ok) throw new Error('API error');
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `Server returned ${res.status}`);
+      }
+
       const result = await res.json();
       const apiClauses: ScannedClause[] = result.clauses || [];
 
@@ -135,7 +140,8 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
       setClauses(mapped);
     } catch (err: any) {
       if (err.name === 'AbortError') return;
-      setError('Scan failed. Please try again.');
+      console.error('Scan error:', err);
+      setError(err.message || 'Scan failed. Please try again.');
     } finally {
       setScanning(false);
     }
@@ -158,14 +164,41 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
     } catch { /* ignore */ }
   };
 
-  const videoWidth = webcamRef.current?.video?.videoWidth || 1280;
-  const videoHeight = webcamRef.current?.video?.videoHeight || 720;
-  const sx = (x: number) => (x / videoWidth) * containerSize.w;
-  const sy = (y: number) => (y / videoHeight) * containerSize.h;
+  // Dynamic AR scaling based on actual video stream dimensions
+  const videoEl = webcamRef.current?.video;
+  const nativeW = videoEl?.videoWidth || 1280;
+  const nativeH = videoEl?.videoHeight || 720;
+
+  // object-cover math: compute rendered size and crop offsets for AR alignment
+  const containerAspect = containerSize.w / (containerSize.h || 1);
+  const videoAspect = nativeW / (nativeH || 1);
+  let renderW: number, renderH: number, offsetX: number, offsetY: number;
+
+  if (videoAspect > containerAspect) {
+    renderH = containerSize.h;
+    renderW = containerSize.h * videoAspect;
+    offsetX = (renderW - containerSize.w) / 2;
+    offsetY = 0;
+  } else {
+    renderW = containerSize.w;
+    renderH = containerSize.w / videoAspect;
+    offsetX = 0;
+    offsetY = (renderH - containerSize.h) / 2;
+  }
+
+  const sx = (x: number) => (x / nativeW) * renderW - offsetX;
+  const sy = (y: number) => (y / nativeH) * renderH - offsetY;
+
+  // Request high resolution to force the main camera (not ultrawide)
+  const videoConstraints: MediaTrackConstraints = {
+    facingMode,
+    width: { ideal: 3840, min: 1280 },
+    height: { ideal: 2160, min: 720 },
+  };
 
   return (
     <div className="fixed inset-0 z-50 bg-black flex flex-col">
-      {/* Camera header — always dark since it sits over the camera */}
+      {/* Camera header */}
       <div className="relative z-10 flex items-center justify-between px-4 py-3 bg-gradient-to-b from-black/70 to-transparent">
         <div className="flex items-center gap-2 text-white">
           <Camera className="w-4 h-4 opacity-80" />
@@ -207,8 +240,8 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
             ref={webcamRef}
             audio={false}
             screenshotFormat="image/jpeg"
-            screenshotQuality={0.92}
-            videoConstraints={{ facingMode }}
+            screenshotQuality={0.95}
+            videoConstraints={videoConstraints}
             onUserMedia={() => {
               setHasCamera(true);
               navigator.mediaDevices.enumerateDevices().then((devices) => {
@@ -217,7 +250,7 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
               }).catch(() => { /* ignore */ });
             }}
             onUserMediaError={() => setHasCamera(false)}
-            className="absolute inset-0 w-full h-full object-contain"
+            className="absolute inset-0 w-full h-full object-cover"
           />
         ) : (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#1a1917] text-[#57534e]">
@@ -239,8 +272,8 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
               style={{
                 left: sx(clause.bbox.x0),
                 top: sy(clause.bbox.y0),
-                width: Math.max(sx(clause.bbox.x1 - clause.bbox.x0), 80),
-                height: Math.max(sy(clause.bbox.y1 - clause.bbox.y0), 22),
+                width: Math.max(sx(clause.bbox.x1) - sx(clause.bbox.x0), 80),
+                height: Math.max(sy(clause.bbox.y1) - sy(clause.bbox.y0), 22),
               }}
               onClick={() => setSelected(clause)}
             />
