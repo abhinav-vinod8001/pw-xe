@@ -4,16 +4,16 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Camera, X, Loader2, Shield, CheckCircle,
-  Save, AlertTriangle, Upload
+  Save, AlertTriangle, Upload, FileText, ArrowRight
 } from 'lucide-react';
-import { scrubPIIWithDetails } from '@/lib/scrubPII';
+import { scrubPIIWithDetails, type ScrubbingStats } from '@/lib/scrubPII';
 import { saveContract } from '@/lib/db';
 import { RISK_CONFIG, type Clause } from '@/lib/constants';
 import { getAnalyzeUrl } from '@/lib/api';
 
 interface ScannerARProps { onClose: () => void; }
 
-type ScannerStep = 'camera' | 'analyzing' | 'result';
+type ScannerStep = 'camera' | 'extracting' | 'review' | 'analyzing' | 'result';
 
 export default function ScannerAR({ onClose }: ScannerARProps) {
   const [step, setStep] = useState<ScannerStep>('camera');
@@ -22,6 +22,7 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
   const [ocrProgress, setOcrProgress] = useState(0);
   const [rawText, setRawText] = useState('');
   const [scrubbedText, setScrubbedText] = useState('');
+  const [scrubStats, setScrubStats] = useState<ScrubbingStats | null>(null);
   const [clauses, setClauses] = useState<Clause[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -48,12 +49,12 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
     if (file) {
       const url = URL.createObjectURL(file);
       setPreviewImage(url);
-      captureAndScan(file);
+      captureAndExtract(file);
     }
   };
 
-  const captureAndScan = useCallback(async (imageFile: File) => {
-    setStep('analyzing');
+  const captureAndExtract = useCallback(async (imageFile: File) => {
+    setStep('extracting');
     setError(null);
     setClauses([]);
     setOcrProgress(0);
@@ -72,9 +73,28 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
       }
 
       setRawText(extracted);
-      const { scrubbedText: scrubbed } = scrubPIIWithDetails(extracted);
+      const { scrubbedText: scrubbed, stats } = scrubPIIWithDetails(extracted);
       setScrubbedText(scrubbed);
+      setScrubStats(stats);
+      
+      // Move to review step
+      setStep('review');
+    } catch (err: any) {
+      console.error('OCR error:', err);
+      setError(err.message || 'Text extraction failed. Please try again.');
+      setStep('camera');
+      if (previewImage) {
+        URL.revokeObjectURL(previewImage);
+        setPreviewImage(null);
+      }
+    }
+  }, [previewImage]);
 
+  const analyzeSecureText = async () => {
+    setStep('analyzing');
+    setError(null);
+    
+    try {
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
@@ -83,7 +103,7 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
       const res = await fetch(getAnalyzeUrl(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: scrubbed, mode: 'scan' }),
+        body: JSON.stringify({ text: scrubbedText, mode: 'scan' }),
         signal: abortControllerRef.current.signal,
       });
 
@@ -97,15 +117,11 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
       setStep('result');
     } catch (err: any) {
       if (err.name === 'AbortError') return;
-      console.error('Scan error:', err);
+      console.error('Analysis error:', err);
       setError(err.message || 'Analysis failed. Please try again.');
-      setStep('camera');
-      if (previewImage) {
-        URL.revokeObjectURL(previewImage);
-        setPreviewImage(null);
-      }
+      setStep('review'); // Go back to review on failure
     }
-  }, [previewImage]);
+  };
 
   const handleSave = async () => {
     if (!rawText || clauses.length === 0) return;
@@ -127,6 +143,21 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
   const redClauses = clauses.filter(c => c.riskLevel === 'RED');
   const yellowClauses = clauses.filter(c => c.riskLevel === 'YELLOW');
   const greenClauses = clauses.filter(c => c.riskLevel === 'GREEN');
+
+  // Helper to render text with highlighted [REDACTED] blocks
+  const renderScrubbedText = (text: string) => {
+    const parts = text.split(/(\[REDACTED\])/g);
+    return parts.map((part, i) => {
+      if (part === '[REDACTED]') {
+        return (
+          <span key={i} className="inline-block bg-black text-white text-[10px] font-bold px-1.5 py-0.5 rounded mx-0.5 tracking-wider align-middle select-none">
+            REDACTED
+          </span>
+        );
+      }
+      return <span key={i}>{part}</span>;
+    });
+  };
 
   return (
     <div className="fixed inset-0 z-50 bg-[#f8f7f4] flex flex-col overflow-y-auto">
@@ -199,8 +230,8 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
             </motion.div>
           )}
 
-          {step === 'analyzing' && (
-            <motion.div key="analyzing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex-1 flex flex-col items-center justify-center gap-6 py-20">
+          {step === 'extracting' && (
+            <motion.div key="extracting" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex-1 flex flex-col items-center justify-center gap-6 py-20">
               {previewImage && (
                 <div className="relative w-48 h-64 rounded-2xl overflow-hidden shadow-md mb-4 border border-[#e5e3df] bg-white">
                   <img src={previewImage} alt="Document Preview" className="w-full h-full object-cover opacity-60 grayscale" />
@@ -212,15 +243,74 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
               
               <div className="text-center">
                 <p className="font-medium text-[#1a1917] text-base">
-                  {ocrProgress < 100 ? `Extracting text… ${ocrProgress}%` : 'Analyzing risk clauses…'}
+                  {ocrProgress < 100 ? `Extracting text… ${ocrProgress}%` : 'Scrubbing personal data…'}
                 </p>
                 <div className="flex items-center justify-center gap-1.5 mt-2 text-[#57534e] text-xs">
-                  <Shield className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>PII scrubbing active.</span>
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>Reading document content</span>
                 </div>
               </div>
               <div className="w-48 h-1.5 bg-[#e5e3df] rounded-full overflow-hidden">
                 <motion.div className="h-full bg-[#1a1917] rounded-full" animate={{ width: `${ocrProgress}%` }} transition={{ type: 'spring' }} />
+              </div>
+            </motion.div>
+          )}
+
+          {step === 'review' && (
+            <motion.div key="review" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="flex-1 flex flex-col py-4 max-h-full">
+              <div className="mb-4">
+                <h2 className="text-xl font-semibold text-[#1a1917] mb-1">Verify Secured Text</h2>
+                <p className="text-sm text-[#57534e]">Review the scrubbed document before it leaves your device.</p>
+              </div>
+
+              {scrubStats && (
+                <div className="mb-4 bg-emerald-50 border border-emerald-200 rounded-2xl p-4 flex flex-col gap-2 shadow-sm">
+                  <div className="flex items-center gap-2 text-emerald-800 font-medium">
+                    <Shield className="w-5 h-5 text-emerald-600" />
+                    <span>Zero-Knowledge Protection Active</span>
+                  </div>
+                  {scrubStats.totalRedactions > 0 ? (
+                    <p className="text-sm text-emerald-700">
+                      Removed {scrubStats.totalRedactions} sensitive items (
+                      {[
+                        scrubStats.names > 0 && `${scrubStats.names} names`,
+                        scrubStats.currencies > 0 && `${scrubStats.currencies} currencies`,
+                        scrubStats.emails > 0 && `${scrubStats.emails} emails`,
+                        scrubStats.phones > 0 && `${scrubStats.phones} phones`,
+                        scrubStats.identifiers > 0 && `${scrubStats.identifiers} IDs`,
+                        scrubStats.addresses > 0 && `${scrubStats.addresses} addresses`,
+                      ].filter(Boolean).join(', ')}).
+                    </p>
+                  ) : (
+                    <p className="text-sm text-emerald-700">No sensitive PII patterns detected in the text.</p>
+                  )}
+                </div>
+              )}
+
+              <div className="flex-1 bg-white border border-[#e5e3df] rounded-2xl p-4 overflow-y-auto mb-6 shadow-inner text-sm leading-relaxed text-[#1a1917] whitespace-pre-wrap font-mono min-h-[30vh]">
+                {renderScrubbedText(scrubbedText)}
+              </div>
+
+              <button
+                onClick={analyzeSecureText}
+                className="w-full flex items-center justify-center gap-2 py-4 rounded-xl bg-[#1a1917] hover:bg-[#2a2926] text-white font-medium text-base transition-colors shadow-lg"
+              >
+                Analyze Secure Text <ArrowRight className="w-5 h-5" />
+              </button>
+            </motion.div>
+          )}
+
+          {step === 'analyzing' && (
+            <motion.div key="analyzing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex-1 flex flex-col items-center justify-center gap-6 py-20">
+              <Loader2 className="w-10 h-10 animate-spin text-[#1a1917]" />
+              <div className="text-center">
+                <p className="font-medium text-[#1a1917] text-base">
+                  Analyzing risk clauses with AI…
+                </p>
+                <div className="flex items-center justify-center gap-1.5 mt-2 text-emerald-700 text-xs font-medium">
+                  <Shield className="w-3.5 h-3.5" />
+                  <span>Only secured text was transmitted.</span>
+                </div>
               </div>
             </motion.div>
           )}
