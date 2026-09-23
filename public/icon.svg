@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3b82f6" />
+      <stop offset="100%" stop-color="#10b981" />
+    </linearGradient>
+    <linearGradient id="glow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#1e293b" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="110" fill="url(#glow)" stroke="#334155" stroke-width="10"/>
+  <path d="M256 70 L390 130 V250 C390 340 330 410 256 442 C182 410 122 340 122 250 V130 Z" fill="none" stroke="url(#grad)" stroke-width="20" stroke-linejoin="round" stroke-linecap="round"/>
+  <!-- LexAR Scale & Lens -->
+  <line x1="256" y1="160" x2="256" y2="330" stroke="#f1f5f9" stroke-width="14" stroke-linecap="round"/>
+  <line x1="190" y1="200" x2="322" y2="200" stroke="#f1f5f9" stroke-width="14" stroke-linecap="round"/>
+  <circle cx="190" cy="240" r="28" fill="none" stroke="#10b981" stroke-width="10"/>
+  <circle cx="322" cy="240" r="28" fill="none" stroke="#3b82f6" stroke-width="10"/>
+  <circle cx="256" cy="330" r="14" fill="#f59e0b" />
+</svg>
