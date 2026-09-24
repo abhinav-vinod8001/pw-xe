@@ -7,9 +7,11 @@
     "build": "next build",
     "start": "HOSTNAME=0.0.0.0 node .next/standalone/server.js",
     "lint": "eslint",
-    "test": "npx tsx scripts/test-scrubber.ts && npx tsx scripts/test-api.ts",
+    "test": "jest --passWithNoTests && npx tsx scripts/test-scrubber.ts",
+    "test:unit": "jest --verbose",
     "test:scrubber": "npx tsx scripts/test-scrubber.ts",
-    "test:api": "npx tsx scripts/test-api.ts"
+    "test:api": "npx tsx scripts/test-api.ts",
+    "test:all": "jest --passWithNoTests && npx tsx scripts/test-scrubber.ts && npx tsx scripts/test-api.ts"
   },
   "dependencies": {
     "dexie": "^4.4.6",
@@ -24,12 +26,19 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
+    "@types/jest": "^30.0.0",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.6",
+    "jest": "^30.5.2",
+    "jest-environment-jsdom": "^30.5.2",
     "tailwindcss": "^4",
+    "ts-jest": "^29.4.13",
     "tsx": "^4.23.15",
     "typescript": "^5"
   }

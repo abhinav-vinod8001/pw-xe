@@ -1,25 +1,38 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import {
-  Camera, X, Loader2, Shield, CheckCircle,
-  Save, AlertTriangle, Upload, FileText, ArrowRight
-} from 'lucide-react';
+import { useEffect, useState, useCallback, useRef } from 'react';
+import { AnimatePresence } from 'framer-motion';
+import { Camera, X, AlertTriangle } from 'lucide-react';
 import { scrubPIIWithDetails, type ScrubbingStats } from '@/lib/scrubPII';
 import { saveContract } from '@/lib/db';
-import { RISK_CONFIG, type Clause } from '@/lib/constants';
+import type { Clause } from '@/lib/constants';
 import { getAnalyzeUrl } from '@/lib/api';
+import { useOCR } from '@/hooks/useOCR';
+
+// Sub-components (single-responsibility)
+import CameraCapture from './scanner/CameraCapture';
+import ExtractingView from './scanner/ExtractingView';
+import ReviewScrubbedText from './scanner/ReviewScrubbedText';
+import AnalyzingView from './scanner/AnalyzingView';
+import RiskResults from './scanner/RiskResults';
 
 interface ScannerARProps { onClose: () => void; }
 
 type ScannerStep = 'camera' | 'extracting' | 'review' | 'analyzing' | 'result';
 
+/**
+ * ScannerAR — Orchestrator Component
+ * 
+ * Manages the state machine for the document scanning flow:
+ *   camera → extracting → review → analyzing → result
+ * 
+ * Each step is rendered by a dedicated sub-component.
+ * OCR is offloaded to a Web Worker via the useOCR hook.
+ */
 export default function ScannerAR({ onClose }: ScannerARProps) {
   const [step, setStep] = useState<ScannerStep>('camera');
   
-  // OCR & Analysis State
-  const [ocrProgress, setOcrProgress] = useState(0);
+  // Data state
   const [rawText, setRawText] = useState('');
   const [scrubbedText, setScrubbedText] = useState('');
   const [scrubStats, setScrubStats] = useState<ScrubbingStats | null>(null);
@@ -28,46 +41,32 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
   const [saved, setSaved] = useState(false);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const { extractText, progress } = useOCR();
 
+  // Keyboard: Escape to close
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', handleKeyDown);
-    
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
-      if (abortControllerRef.current) abortControllerRef.current.abort();
+      abortControllerRef.current?.abort();
       if (previewImage) URL.revokeObjectURL(previewImage);
     };
   }, [onClose, previewImage]);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const url = URL.createObjectURL(file);
-      setPreviewImage(url);
-      captureAndExtract(file);
-    }
-  };
-
-  const captureAndExtract = useCallback(async (imageFile: File) => {
+  // Step 1 → 2: User selects a file
+  const handleFileSelected = useCallback(async (file: File) => {
+    const url = URL.createObjectURL(file);
+    setPreviewImage(url);
     setStep('extracting');
     setError(null);
     setClauses([]);
-    setOcrProgress(0);
 
     try {
-      const Tesseract = await import('tesseract.js');
-      const { data } = await Tesseract.recognize(imageFile, 'eng', {
-        logger: (m: { status: string; progress: number }) => {
-          if (m.status === 'recognizing text') setOcrProgress(Math.round(m.progress * 100));
-        },
-      });
-
-      const extracted = data.text.trim();
+      const extracted = await extractText(file);
       if (!extracted || extracted.length < 20) {
         throw new Error('No readable text detected. Please ensure the document is well-lit and in focus.');
       }
@@ -76,28 +75,23 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
       const { scrubbedText: scrubbed, stats } = scrubPIIWithDetails(extracted);
       setScrubbedText(scrubbed);
       setScrubStats(stats);
-      
-      // Move to review step
       setStep('review');
     } catch (err: any) {
       console.error('OCR error:', err);
       setError(err.message || 'Text extraction failed. Please try again.');
       setStep('camera');
-      if (previewImage) {
-        URL.revokeObjectURL(previewImage);
-        setPreviewImage(null);
-      }
+      URL.revokeObjectURL(url);
+      setPreviewImage(null);
     }
-  }, [previewImage]);
+  }, [extractText]);
 
-  const analyzeSecureText = async () => {
+  // Step 3 → 4: User approves scrubbed text
+  const handleAnalyze = useCallback(async () => {
     setStep('analyzing');
     setError(null);
-    
+
     try {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
+      abortControllerRef.current?.abort();
       abortControllerRef.current = new AbortController();
 
       const res = await fetch(getAnalyzeUrl(), {
@@ -119,11 +113,12 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
       if (err.name === 'AbortError') return;
       console.error('Analysis error:', err);
       setError(err.message || 'Analysis failed. Please try again.');
-      setStep('review'); // Go back to review on failure
+      setStep('review');
     }
-  };
+  }, [scrubbedText]);
 
-  const handleSave = async () => {
+  // Save to IndexedDB
+  const handleSave = useCallback(async () => {
     if (!rawText || clauses.length === 0) return;
     try {
       await saveContract({
@@ -138,255 +133,75 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
       });
       setSaved(true);
     } catch { /* ignore */ }
-  };
+  }, [rawText, scrubbedText, clauses]);
 
-  const redClauses = clauses.filter(c => c.riskLevel === 'RED');
-  const yellowClauses = clauses.filter(c => c.riskLevel === 'YELLOW');
-  const greenClauses = clauses.filter(c => c.riskLevel === 'GREEN');
-
-  // Helper to render text with highlighted [REDACTED] blocks
-  const renderScrubbedText = (text: string) => {
-    const parts = text.split(/(\[REDACTED\])/g);
-    return parts.map((part, i) => {
-      if (part === '[REDACTED]') {
-        return (
-          <span key={i} className="inline-block bg-black text-white text-[10px] font-bold px-1.5 py-0.5 rounded mx-0.5 tracking-wider align-middle select-none">
-            REDACTED
-          </span>
-        );
-      }
-      return <span key={i}>{part}</span>;
-    });
-  };
+  // Reset to camera
+  const handleScanAnother = useCallback(() => {
+    setStep('camera');
+    setSaved(false);
+    if (previewImage) {
+      URL.revokeObjectURL(previewImage);
+      setPreviewImage(null);
+    }
+  }, [previewImage]);
 
   return (
-    <div className="fixed inset-0 z-50 bg-[#f8f7f4] flex flex-col overflow-y-auto">
+    <div className="fixed inset-0 z-50 bg-[#f8f7f4] flex flex-col overflow-y-auto" role="dialog" aria-modal="true" aria-label="Document scanner">
       {/* Header */}
-      <div className="sticky top-0 z-20 flex items-center justify-between px-4 py-3 bg-[#f8f7f4] border-b border-[#e5e3df]">
+      <header className="sticky top-0 z-20 flex items-center justify-between px-4 py-3 bg-[#f8f7f4] border-b border-[#e5e3df]">
         <div className="flex items-center gap-2 text-[#1a1917]">
-          <Camera className="w-4 h-4 opacity-80" />
+          <Camera className="w-4 h-4 opacity-80" aria-hidden="true" />
           <span className="text-sm font-medium">Scan Document</span>
         </div>
-        <button onClick={onClose} className="p-2 rounded-full hover:bg-[#e5e3df] text-[#1a1917] transition-colors">
-          <X className="w-4 h-4" />
+        <button 
+          onClick={onClose} 
+          className="p-2 rounded-full hover:bg-[#e5e3df] text-[#1a1917] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1a1917]"
+          aria-label="Close scanner"
+        >
+          <X className="w-4 h-4" aria-hidden="true" />
         </button>
-      </div>
+      </header>
 
-      <div className="flex-1 max-w-2xl mx-auto w-full p-4 flex flex-col">
+      <main className="flex-1 max-w-2xl mx-auto w-full p-4 flex flex-col">
+        {/* Error Banner */}
         {error && (
-          <div className="mb-4 bg-red-50 border border-red-200 text-red-700 text-xs px-3 py-2 rounded-xl flex items-start gap-2">
-            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+          <div className="mb-4 bg-red-50 border border-red-200 text-red-700 text-xs px-3 py-2 rounded-xl flex items-start gap-2" role="alert">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
             <p>{error}</p>
           </div>
         )}
 
         <AnimatePresence mode="wait">
           {step === 'camera' && (
-            <motion.div key="camera" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex-1 flex flex-col justify-center items-center py-10">
-              
-              <input 
-                type="file" 
-                accept="image/*" 
-                capture="environment" 
-                ref={fileInputRef}
-                className="hidden" 
-                onChange={handleFileChange}
-              />
-
-              <div className="text-center max-w-sm w-full space-y-6">
-                <div className="bg-white p-8 rounded-3xl shadow-sm border border-[#e5e3df] flex flex-col items-center gap-4">
-                  <div className="w-16 h-16 bg-[#f8f7f4] rounded-full flex items-center justify-center text-[#1a1917]">
-                    <Camera className="w-8 h-8" />
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-semibold text-[#1a1917]">Take a Photo</h3>
-                    <p className="text-sm text-[#57534e] mt-1">Use your native camera app to capture a high-quality photo of the document.</p>
-                  </div>
-                </div>
-
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  className="w-full flex items-center justify-center gap-2 py-4 rounded-xl bg-[#1a1917] hover:bg-[#2a2926] text-white font-medium text-base transition-colors shadow-lg"
-                >
-                  <Camera className="w-5 h-5" />
-                  Open Camera
-                </button>
-                
-                <button
-                  onClick={() => {
-                    if (fileInputRef.current) {
-                      fileInputRef.current.removeAttribute('capture');
-                      fileInputRef.current.click();
-                      // Re-add it after a short delay so the main button still uses camera
-                      setTimeout(() => fileInputRef.current?.setAttribute('capture', 'environment'), 1000);
-                    }
-                  }}
-                  className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-white border border-[#e5e3df] hover:bg-[#f8f7f4] text-[#1a1917] font-medium text-sm transition-colors"
-                >
-                  <Upload className="w-4 h-4" />
-                  Upload from Gallery
-                </button>
-              </div>
-            </motion.div>
+            <CameraCapture onFileSelected={handleFileSelected} />
           )}
 
           {step === 'extracting' && (
-            <motion.div key="extracting" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex-1 flex flex-col items-center justify-center gap-6 py-20">
-              {previewImage && (
-                <div className="relative w-48 h-64 rounded-2xl overflow-hidden shadow-md mb-4 border border-[#e5e3df] bg-white">
-                  <img src={previewImage} alt="Document Preview" className="w-full h-full object-cover opacity-60 grayscale" />
-                  <div className="absolute inset-0 flex items-center justify-center bg-black/10 backdrop-blur-sm">
-                    <Loader2 className="w-10 h-10 animate-spin text-white drop-shadow-md" />
-                  </div>
-                </div>
-              )}
-              
-              <div className="text-center">
-                <p className="font-medium text-[#1a1917] text-base">
-                  {ocrProgress < 100 ? `Extracting text… ${ocrProgress}%` : 'Scrubbing personal data…'}
-                </p>
-                <div className="flex items-center justify-center gap-1.5 mt-2 text-[#57534e] text-xs">
-                  <FileText className="w-3.5 h-3.5" />
-                  <span>Reading document content</span>
-                </div>
-              </div>
-              <div className="w-48 h-1.5 bg-[#e5e3df] rounded-full overflow-hidden">
-                <motion.div className="h-full bg-[#1a1917] rounded-full" animate={{ width: `${ocrProgress}%` }} transition={{ type: 'spring' }} />
-              </div>
-            </motion.div>
+            <ExtractingView progress={progress} previewImage={previewImage} />
           )}
 
-          {step === 'review' && (
-            <motion.div key="review" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="flex-1 flex flex-col py-4 max-h-full">
-              <div className="mb-4">
-                <h2 className="text-xl font-semibold text-[#1a1917] mb-1">Verify Secured Text</h2>
-                <p className="text-sm text-[#57534e]">Review the scrubbed document before it leaves your device.</p>
-              </div>
-
-              {scrubStats && (
-                <div className="mb-4 bg-emerald-50 border border-emerald-200 rounded-2xl p-4 flex flex-col gap-2 shadow-sm">
-                  <div className="flex items-center gap-2 text-emerald-800 font-medium">
-                    <Shield className="w-5 h-5 text-emerald-600" />
-                    <span>Zero-Knowledge Protection Active</span>
-                  </div>
-                  {scrubStats.totalRedactions > 0 ? (
-                    <p className="text-sm text-emerald-700">
-                      Removed {scrubStats.totalRedactions} sensitive items (
-                      {[
-                        scrubStats.names > 0 && `${scrubStats.names} names`,
-                        scrubStats.currencies > 0 && `${scrubStats.currencies} currencies`,
-                        scrubStats.emails > 0 && `${scrubStats.emails} emails`,
-                        scrubStats.phones > 0 && `${scrubStats.phones} phones`,
-                        scrubStats.identifiers > 0 && `${scrubStats.identifiers} IDs`,
-                        scrubStats.addresses > 0 && `${scrubStats.addresses} addresses`,
-                      ].filter(Boolean).join(', ')}).
-                    </p>
-                  ) : (
-                    <p className="text-sm text-emerald-700">No sensitive PII patterns detected in the text.</p>
-                  )}
-                </div>
-              )}
-
-              <div className="flex-1 bg-white border border-[#e5e3df] rounded-2xl p-4 overflow-y-auto mb-6 shadow-inner text-sm leading-relaxed text-[#1a1917] whitespace-pre-wrap font-mono min-h-[30vh]">
-                {renderScrubbedText(scrubbedText)}
-              </div>
-
-              <button
-                onClick={analyzeSecureText}
-                className="w-full flex items-center justify-center gap-2 py-4 rounded-xl bg-[#1a1917] hover:bg-[#2a2926] text-white font-medium text-base transition-colors shadow-lg"
-              >
-                Analyze Secure Text <ArrowRight className="w-5 h-5" />
-              </button>
-            </motion.div>
+          {step === 'review' && scrubStats && (
+            <ReviewScrubbedText
+              scrubbedText={scrubbedText}
+              stats={scrubStats}
+              onAnalyze={handleAnalyze}
+            />
           )}
 
           {step === 'analyzing' && (
-            <motion.div key="analyzing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex-1 flex flex-col items-center justify-center gap-6 py-20">
-              <Loader2 className="w-10 h-10 animate-spin text-[#1a1917]" />
-              <div className="text-center">
-                <p className="font-medium text-[#1a1917] text-base">
-                  Analyzing risk clauses with AI…
-                </p>
-                <div className="flex items-center justify-center gap-1.5 mt-2 text-emerald-700 text-xs font-medium">
-                  <Shield className="w-3.5 h-3.5" />
-                  <span>Only secured text was transmitted.</span>
-                </div>
-              </div>
-            </motion.div>
+            <AnalyzingView />
           )}
 
           {step === 'result' && (
-            <motion.div key="result" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6 pb-12">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-[#1a1917]">Scan Results</h2>
-                <button onClick={() => { 
-                  setStep('camera'); 
-                  setSaved(false);
-                  if (previewImage) {
-                    URL.revokeObjectURL(previewImage);
-                    setPreviewImage(null);
-                  }
-                }} className="text-sm font-medium text-[#57534e] hover:text-[#1a1917]">
-                  Scan another
-                </button>
-              </div>
-
-              <div className="flex gap-3 text-xs">
-                {[
-                  { count: redClauses.length, label: 'High risk', cls: 'bg-red-50 border-red-200 text-red-700' },
-                  { count: yellowClauses.length, label: 'Review', cls: 'bg-amber-50 border-amber-200 text-amber-700' },
-                  { count: greenClauses.length, label: 'Standard', cls: 'bg-green-50 border-green-200 text-green-700' },
-                ].map(item => (
-                  <div key={item.label} className={`flex-1 text-center py-3 rounded-xl border font-medium ${item.cls}`}>
-                    <div className="text-lg font-semibold">{item.count}</div>
-                    <div className="text-[11px] opacity-80 mt-0.5">{item.label}</div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="space-y-3">
-                {clauses.map((clause, i) => {
-                  const cfg = RISK_CONFIG[clause.riskLevel];
-                  return (
-                    <motion.div
-                      key={i}
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: i * 0.05 }}
-                      className={`border rounded-2xl p-4 bg-white ${cfg.card}`}
-                    >
-                      <div className="flex items-center gap-2 mb-2.5">
-                        <span className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${cfg.badge}`}>
-                          {cfg.icon} {cfg.label}
-                        </span>
-                        {clause.category && (
-                          <span className="text-[#a8a29e] text-xs">{clause.category}</span>
-                        )}
-                      </div>
-                      <p className="text-[#1a1917] text-sm leading-relaxed">{clause.text}</p>
-                      <div className="mt-3 pt-3 border-t border-[#e5e3df]">
-                        <p className="text-[#57534e] text-sm leading-relaxed">{clause.summary}</p>
-                      </div>
-                    </motion.div>
-                  );
-                })}
-              </div>
-
-              <div className="pt-4">
-                {!saved ? (
-                  <button onClick={handleSave} className="w-full flex items-center justify-center gap-2 py-4 rounded-xl bg-[#1a1917] hover:bg-[#2a2926] text-white text-sm font-medium transition-colors shadow-md">
-                    <Save className="w-4 h-4" /> Save to history
-                  </button>
-                ) : (
-                  <div className="flex items-center justify-center gap-2 py-4 rounded-xl bg-green-50 text-green-700 text-sm font-medium border border-green-200">
-                    <CheckCircle className="w-5 h-5" /> Saved successfully
-                  </div>
-                )}
-              </div>
-            </motion.div>
+            <RiskResults
+              clauses={clauses}
+              saved={saved}
+              onSave={handleSave}
+              onScanAnother={handleScanAnother}
+            />
           )}
         </AnimatePresence>
-      </div>
+      </main>
     </div>
   );
 }

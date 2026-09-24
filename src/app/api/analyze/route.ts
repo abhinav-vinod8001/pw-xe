@@ -100,6 +100,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const body: AnalyzeRequest = await request.json();
     const { text, mode = 'pdf', fileName } = body;
 
+    // 2b. Validate mode is one of the expected values
+    if (mode && !['pdf', 'scan'].includes(mode)) {
+      return NextResponse.json(
+        { error: 'Invalid mode. Must be "pdf" or "scan".' },
+        { status: 400 }
+      );
+    }
+
     // 3. Input Validation
     if (!text || typeof text !== 'string' || text.trim().length < 10) {
       return NextResponse.json(
