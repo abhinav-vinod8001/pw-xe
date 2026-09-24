@@ -3,95 +3,73 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Upload, FileText, Loader2, Shield, AlertTriangle, Zap,
-  CheckCircle, X, ChevronLeft, Save, Eye, EyeOff
+  Upload, FileText, Loader2, Shield, AlertTriangle, ChevronLeft
 } from 'lucide-react';
-import { scrubPIIWithDetails } from '@/lib/scrubPII';
+import { scrubPIIWithDetails, type ScrubbingStats } from '@/lib/scrubPII';
 import { saveContract } from '@/lib/db';
-import { RISK_CONFIG, type Clause } from '@/lib/constants';
+import type { Clause } from '@/lib/constants';
 import { getAnalyzeUrl } from '@/lib/api';
+import { usePDFParser } from '@/hooks/usePDFParser';
+
+// Reusable sub-components shared with Scanner
+import ReviewScrubbedText from './scanner/ReviewScrubbedText';
+import RiskResults from './scanner/RiskResults';
 
 interface DocumentUploadProps {
   onClose: () => void;
   onSaved: () => void;
 }
 
-
-
 type Step = 'idle' | 'parsing' | 'review' | 'analyzing' | 'result';
 
+/**
+ * DocumentUpload Component
+ * 
+ * Orchestrates client-side PDF parsing and AI legal risk analysis.
+ * Reuses ReviewScrubbedText and RiskResults for zero code duplication.
+ */
 export default function DocumentUpload({ onClose, onSaved }: DocumentUploadProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [step, setStep] = useState<Step>('idle');
   const [fileName, setFileName] = useState('');
   const [rawText, setRawText] = useState('');
   const [scrubbedText, setScrubbedText] = useState('');
-  const [redactionStats, setRedactionStats] = useState<{
-    totalRedactions: number; names: number; currencies: number;
-    emails: number; phones: number; identifiers: number; addresses: number;
-  } | null>(null);
-  const [showOriginal, setShowOriginal] = useState(false);
+  const [scrubStats, setScrubStats] = useState<ScrubbingStats | null>(null);
   const [clauses, setClauses] = useState<Clause[]>([]);
+  const [summary, setSummary] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
-  const [parseProgress, setParseProgress] = useState(0);
   
   const abortControllerRef = useRef<AbortController | null>(null);
+  const { parsePDF, isParsing, parseProgress } = usePDFParser();
 
   useEffect(() => {
     return () => {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
+      abortControllerRef.current?.abort();
     };
   }, []);
 
-  const parsePDF = useCallback(async (file: File) => {
-    setStep('parsing');
-    setFileName(file.name);
+  // Handle uploaded file
+  const handleFile = useCallback(async (file: File | undefined | null) => {
+    if (!file) return;
     setError(null);
-    setParseProgress(0);
+    setFileName(file.name);
+    setStep('parsing');
 
     try {
-      const pdfjsLib = await import('pdfjs-dist');
-      pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
+      const text = await parsePDF(file);
+      setRawText(text);
 
-      const arrayBuffer = await file.arrayBuffer();
-      const pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-      const numPages = pdfDoc.numPages;
-
-      let fullText = '';
-      for (let pageNum = 1; pageNum <= numPages; pageNum++) {
-        const page = await pdfDoc.getPage(pageNum);
-        const content = await page.getTextContent();
-        const pageText = content.items.map((item) => ('str' in item ? item.str : '')).join(' ');
-        fullText += pageText + '\n\n';
-        setParseProgress(Math.round((pageNum / numPages) * 100));
-      }
-
-      if (!fullText.trim() || fullText.trim().length < 20) {
-        setError('No readable text found. The PDF may be image-only or password-protected.');
-        setStep('idle');
-        return;
-      }
-
-      setRawText(fullText);
-      const result = scrubPIIWithDetails(fullText);
-      setScrubbedText(result.scrubbedText);
-      setRedactionStats(result.stats);
+      const { scrubbedText: scrubbed, stats } = scrubPIIWithDetails(text);
+      setScrubbedText(scrubbed);
+      setScrubStats(stats);
       setStep('review');
-    } catch {
-      setError('Could not parse this PDF. Please ensure it is a valid, unencrypted file.');
+    } catch (err: any) {
+      console.error('PDF parsing error:', err);
+      setError(err.message || 'Could not parse this PDF. Please ensure it is an unencrypted, text-based PDF.');
       setStep('idle');
     }
-  }, []);
-
-  const handleFile = useCallback((file: File | undefined | null) => {
-    if (!file) return;
-    if (file.type !== 'application/pdf') { setError('Only PDF files are supported.'); return; }
-    if (file.size > 20 * 1024 * 1024) { setError('File too large. Maximum size is 20 MB.'); return; }
-    parsePDF(file);
   }, [parsePDF]);
 
   const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
@@ -100,13 +78,20 @@ export default function DocumentUpload({ onClose, onSaved }: DocumentUploadProps
     handleFile(e.dataTransfer.files[0]);
   }, [handleFile]);
 
+  // Update text when user edits in review screen
+  const handleUpdateText = useCallback((newText: string) => {
+    setRawText(newText);
+    const { scrubbedText: scrubbed, stats } = scrubPIIWithDetails(newText);
+    setScrubbedText(scrubbed);
+    setScrubStats(stats);
+  }, []);
+
+  // Run AI analysis
   const analyzeDocument = async () => {
     setStep('analyzing');
     setError(null);
     
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
+    abortControllerRef.current?.abort();
     abortControllerRef.current = new AbortController();
     
     try {
@@ -116,21 +101,29 @@ export default function DocumentUpload({ onClose, onSaved }: DocumentUploadProps
         body: JSON.stringify({ text: scrubbedText, mode: 'pdf', fileName }),
         signal: abortControllerRef.current.signal,
       });
-      if (!res.ok) throw new Error();
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `Server returned ${res.status}`);
+      }
+
       const data = await res.json();
       setClauses(data.clauses || []);
+      setSummary(data.summary || null);
       setStep('result');
     } catch (err: any) {
-      if (err.name === 'AbortError') return; // Ignore aborts
-      setError('Analysis failed. Please try again.');
+      if (err.name === 'AbortError') return;
+      console.error('Analysis error:', err);
+      setError(err.message || 'Analysis failed. Please try again.');
       setStep('review');
     }
   };
 
+  // Save to IndexedDB
   const handleSave = async () => {
     try {
       await saveContract({
-        title: fileName.replace('.pdf', '').replace(/_/g, ' ') || 'Uploaded Document',
+        title: fileName.replace(/\.pdf$/i, '').replace(/[_-]/g, ' ') || 'Uploaded PDF Document',
         createdAt: new Date(),
         documentType: 'pdf',
         rawText,
@@ -138,15 +131,12 @@ export default function DocumentUpload({ onClose, onSaved }: DocumentUploadProps
         clauses,
         overallRisk: clauses.some(c => c.riskLevel === 'RED') ? 'RED'
           : clauses.some(c => c.riskLevel === 'YELLOW') ? 'YELLOW' : 'GREEN',
+        summaryNotes: summary || undefined,
       });
       setSaved(true);
       setTimeout(onSaved, 900);
     } catch { /* ignore */ }
   };
-
-  const redClauses = clauses.filter(c => c.riskLevel === 'RED');
-  const yellowClauses = clauses.filter(c => c.riskLevel === 'YELLOW');
-  const greenClauses = clauses.filter(c => c.riskLevel === 'GREEN');
 
   return (
     <div className="pt-6">
@@ -154,16 +144,26 @@ export default function DocumentUpload({ onClose, onSaved }: DocumentUploadProps
       <div className="flex items-center gap-3 mb-6">
         <button
           onClick={onClose}
-          className="p-1.5 rounded-lg hover:bg-[#e5e3df] text-[#57534e] transition-colors"
-          aria-label="Back"
+          className="p-1.5 rounded-lg hover:bg-[#e5e3df] text-[#57534e] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1a1917]"
+          aria-label="Back to dashboard"
         >
           <ChevronLeft className="w-4 h-4" />
         </button>
-        <h2 className="font-semibold text-[#1a1917]">Upload Document</h2>
+        <h2 className="font-semibold text-[#1a1917]">
+          {step === 'result' ? 'Document Analysis' : 'Upload Document'}
+        </h2>
       </div>
 
+      {/* Global Error Banner */}
+      {error && step !== 'idle' && (
+        <div className="mb-4 bg-red-50 border border-red-200 text-red-700 text-xs px-3 py-2 rounded-xl flex items-start gap-2" role="alert">
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
+          <p>{error}</p>
+        </div>
+      )}
+
       <AnimatePresence mode="wait">
-        {/* Idle — drop zone */}
+        {/* Step 1: Idle — Drop zone */}
         {step === 'idle' && (
           <motion.div key="idle" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <div
@@ -185,10 +185,10 @@ export default function DocumentUpload({ onClose, onSaved }: DocumentUploadProps
               </div>
               <div className="text-center">
                 <p className="font-medium text-[#1a1917] text-sm">Drop a PDF here</p>
-                <p className="text-[#a8a29e] text-xs mt-1">or click to browse · max 20 MB</p>
+                <p className="text-[#a8a29e] text-xs mt-1">or click to browse · max 25 MB</p>
               </div>
-              <div className="flex items-center gap-1.5 text-emerald-700 text-xs">
-                <Shield className="w-3 h-3" />
+              <div className="flex items-center gap-1.5 text-emerald-700 text-xs font-medium">
+                <Shield className="w-3.5 h-3.5" />
                 Parsed entirely on your device
               </div>
               <input
@@ -203,17 +203,17 @@ export default function DocumentUpload({ onClose, onSaved }: DocumentUploadProps
           </motion.div>
         )}
 
-        {/* Parsing */}
+        {/* Step 2: Parsing Progress */}
         {step === 'parsing' && (
           <motion.div key="parsing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             className="flex flex-col items-center justify-center gap-5 py-16">
             <Loader2 className="w-7 h-7 animate-spin text-[#57534e]" />
             <div className="text-center">
-              <p className="font-medium text-[#1a1917] text-sm">Reading PDF…</p>
-              <p className="text-[#a8a29e] text-xs mt-1 max-w-[180px] truncate">{fileName}</p>
+              <p className="font-medium text-[#1a1917] text-sm">Reading PDF locally…</p>
+              <p className="text-[#a8a29e] text-xs mt-1 max-w-[200px] truncate">{fileName}</p>
             </div>
             <div 
-              className="w-40 h-1 bg-[#e5e3df] rounded-full overflow-hidden"
+              className="w-48 h-1.5 bg-[#e5e3df] rounded-full overflow-hidden"
               role="progressbar"
               aria-valuenow={parseProgress}
               aria-valuemin={0}
@@ -228,140 +228,50 @@ export default function DocumentUpload({ onClose, onSaved }: DocumentUploadProps
           </motion.div>
         )}
 
-        {/* Review — PII scrub summary */}
-        {step === 'review' && (
-          <motion.div key="review" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-4">
-            {/* Scrub summary */}
-            <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4" role="status" aria-live="polite">
-              <div className="flex items-center gap-2 mb-3">
-                <Shield className="w-4 h-4 text-emerald-700" />
-                <span className="text-emerald-800 font-medium text-sm">Personal info removed</span>
-              </div>
-              {redactionStats && (
-                <div className="grid grid-cols-3 gap-2 text-xs">
-                  {[
-                    { label: 'Names', count: redactionStats.names },
-                    { label: 'Amounts', count: redactionStats.currencies },
-                    { label: 'Emails', count: redactionStats.emails },
-                    { label: 'Phones', count: redactionStats.phones },
-                    { label: 'IDs', count: redactionStats.identifiers },
-                    { label: 'Addresses', count: redactionStats.addresses },
-                  ].map(s => (
-                    <div key={s.label} className="bg-white border border-emerald-100 rounded-lg p-2 text-center">
-                      <div className="font-semibold text-[#1a1917]">{s.count}</div>
-                      <div className="text-[#a8a29e]">{s.label}</div>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <p className="text-emerald-700 text-xs mt-3">
-                {redactionStats?.totalRedactions || 0} items redacted. Only anonymized text goes to AI.
-              </p>
-            </div>
-
-            {/* Text preview */}
-            <div className="bg-white border border-[#e5e3df] rounded-xl overflow-hidden">
-              <div className="flex items-center justify-between px-3 py-2 border-b border-[#e5e3df]">
-                <span className="text-[#57534e] text-xs font-medium">Text preview</span>
-                <button
-                  onClick={() => setShowOriginal(!showOriginal)}
-                  className="flex items-center gap-1 text-xs text-[#a8a29e] hover:text-[#57534e] transition-colors"
-                >
-                  {showOriginal ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-                  {showOriginal ? 'Scrubbed' : 'Original'}
-                </button>
-              </div>
-              <div className="p-3 max-h-36 overflow-y-auto">
-                <pre className="text-[#57534e] text-xs font-mono whitespace-pre-wrap break-words leading-relaxed">
-                  {(showOriginal ? rawText : scrubbedText).slice(0, 700)}
-                  {rawText.length > 700 && '\n…'}
-                </pre>
-              </div>
-            </div>
-
-            {error && <p role="alert" className="text-red-600 text-xs">{error}</p>}
-
-            <button
-              id="btn-analyze-document"
-              onClick={analyzeDocument}
-              className="w-full py-3 rounded-xl bg-[#1a1917] hover:bg-[#2a2926] text-white text-sm font-medium transition-colors"
-            >
-              Analyze with AI
-            </button>
-          </motion.div>
+        {/* Step 3: Review Scrubbed Text (Reuses ReviewScrubbedText) */}
+        {step === 'review' && scrubStats && (
+          <ReviewScrubbedText
+            scrubbedText={scrubbedText}
+            rawText={rawText}
+            stats={scrubStats}
+            onAnalyze={analyzeDocument}
+            onUpdateText={handleUpdateText}
+            onRetake={() => {
+              setStep('idle');
+              setRawText('');
+              setScrubbedText('');
+              setScrubStats(null);
+            }}
+          />
         )}
 
-        {/* Analyzing */}
+        {/* Step 4: Analyzing Spinner */}
         {step === 'analyzing' && (
           <motion.div key="analyzing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             className="flex flex-col items-center gap-5 py-16">
             <Loader2 className="w-7 h-7 animate-spin text-[#57534e]" />
             <div className="text-center">
-              <p className="font-medium text-[#1a1917] text-sm">Analyzing clauses…</p>
-              <p className="text-[#a8a29e] text-xs mt-1">Only scrubbed text is sent</p>
+              <p className="font-medium text-[#1a1917] text-sm">Analyzing clauses with AI…</p>
+              <p className="text-[#a8a29e] text-xs mt-1">Only scrubbed, zero-knowledge text is evaluated</p>
             </div>
           </motion.div>
         )}
 
-        {/* Result */}
+        {/* Step 5: Risk Results (Reuses RiskResults) */}
         {step === 'result' && (
-          <motion.div key="result" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-5">
-            {/* Summary row */}
-            <div className="flex gap-2 text-xs">
-              {[
-                { count: redClauses.length, label: 'High risk', cls: 'bg-red-50 border-red-200 text-red-700' },
-                { count: yellowClauses.length, label: 'Review', cls: 'bg-amber-50 border-amber-200 text-amber-700' },
-                { count: greenClauses.length, label: 'Standard', cls: 'bg-green-50 border-green-200 text-green-700' },
-              ].map(item => (
-                <div key={item.label} className={`flex-1 text-center py-2 rounded-lg border font-medium ${item.cls}`}>
-                  <div className="text-base font-semibold">{item.count}</div>
-                  <div className="text-[10px] opacity-80">{item.label}</div>
-                </div>
-              ))}
-            </div>
-
-            {/* Clause list */}
-            <div className="space-y-2">
-              {[...redClauses, ...yellowClauses, ...greenClauses].map((clause, i) => {
-                const cfg = RISK_CONFIG[clause.riskLevel];
-                return (
-                  <motion.div
-                    key={i}
-                    initial={{ opacity: 0, y: 6 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: i * 0.04 }}
-                    className={`border rounded-xl p-4 ${cfg.card}`}
-                  >
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border ${cfg.badge}`}>
-                        {cfg.icon} {cfg.label}
-                      </span>
-                      {clause.category && (
-                        <span className="text-[#a8a29e] text-[11px]">{clause.category}</span>
-                      )}
-                    </div>
-                    <p className="text-[#1a1917] text-sm leading-relaxed line-clamp-3">{clause.text}</p>
-                    <p className="text-[#57534e] text-xs mt-1.5 leading-relaxed">{clause.summary}</p>
-                  </motion.div>
-                );
-              })}
-            </div>
-
-            {/* Save */}
-            {!saved ? (
-              <button
-                id="btn-save-contract"
-                onClick={handleSave}
-                className="w-full flex items-center justify-center gap-2 py-3 rounded-xl border border-[#e5e3df] bg-white hover:bg-[#f2f1ee] text-[#1a1917] text-sm font-medium transition-colors"
-              >
-                <Save className="w-4 h-4" /> Save to history
-              </button>
-            ) : (
-              <div className="flex items-center justify-center gap-2 py-3 rounded-xl bg-green-50 text-green-700 text-sm font-medium border border-green-200">
-                <CheckCircle className="w-4 h-4" /> Saved
-              </div>
-            )}
-          </motion.div>
+          <RiskResults
+            clauses={clauses}
+            summary={summary}
+            saved={saved}
+            onSave={handleSave}
+            onScanAnother={() => {
+              setStep('idle');
+              setSaved(false);
+              setClauses([]);
+              setSummary(null);
+            }}
+            onBackToReview={() => setStep('review')}
+          />
         )}
       </AnimatePresence>
     </div>
