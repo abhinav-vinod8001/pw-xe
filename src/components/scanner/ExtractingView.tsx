@@ -42,11 +42,11 @@ export default function ExtractingView({ progress, previewImage }: ExtractingVie
       
       <div className="text-center">
         <p className="font-medium text-[#1a1917] text-base" aria-live="polite">
-          {progress < 100 ? `Extracting text… ${progress}%` : 'Scrubbing personal data…'}
+          {progress < 30 ? 'Preparing image…' : progress < 80 ? 'Reading document with AI vision…' : 'Finalizing extraction…'}
         </p>
         <div className="flex items-center justify-center gap-1.5 mt-2 text-[#57534e] text-xs">
           <FileText className="w-3.5 h-3.5" aria-hidden="true" />
-          <span>Reading document content</span>
+          <span>AI-powered text extraction</span>
         </div>
       </div>
 

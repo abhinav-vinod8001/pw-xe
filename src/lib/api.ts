@@ -6,3 +6,7 @@ export const API_BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL || '';
 export function getAnalyzeUrl(): string {
   return `${API_BASE_URL}/api/analyze`;
 }
+
+export function getOcrUrl(): string {
+  return `${API_BASE_URL}/api/ocr`;
+}

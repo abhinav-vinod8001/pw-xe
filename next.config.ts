@@ -3,6 +3,12 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   // Standalone output for non-Vercel deployment (Render, Docker, etc.)
   output: 'standalone',
+  // Allow larger request bodies for image OCR uploads (up to 5MB)
+  experimental: {
+    serverActions: {
+      bodySizeLimit: '5mb',
+    },
+  },
   // Turbopack is default in Next.js 16. Use turbopack config instead of webpack.
   // Silence the webpack/turbopack conflict and alias canvas for pdfjs-dist.
   turbopack: {
