@@ -4,21 +4,27 @@ import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ChevronLeft, Loader2, AlertTriangle, Zap, CheckCircle,
-  ChevronRight, Trash2, Printer, Clock, Sparkles, Copy, Check
+  ChevronRight, Trash2, Printer, Clock, Sparkles, Copy, Check,
+  MessageSquare, FileEdit
 } from 'lucide-react';
 import { getAllContracts, deleteContract, getContractById, type Contract } from '@/lib/db';
 import { RISK_CONFIG, type Clause, type RiskLevel } from '@/lib/constants';
 
+import FairnessGauge from './scanner/FairnessGauge';
+import AskLexARChat from './scanner/AskLexARChat';
+import RedlineDiffModal from './scanner/RedlineDiffModal';
+
 interface HistoryBriefsProps {
   onClose: () => void;
 }
-
 
 export default function HistoryBriefs({ onClose }: HistoryBriefsProps) {
   const [contracts, setContracts] = useState<Contract[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedContract, setSelectedContract] = useState<Contract | null>(null);
   const [deleting, setDeleting] = useState<number | null>(null);
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [isRedlineOpen, setIsRedlineOpen] = useState(false);
 
   const loadContracts = useCallback(async () => {
     setLoading(true);
@@ -167,6 +173,48 @@ export default function HistoryBriefs({ onClose }: HistoryBriefsProps) {
               <hr className="my-4 border-[#e5e3df]" />
             </div>
 
+            {/* Contract Fairness Meter */}
+            <FairnessGauge clauses={selectedContract.clauses} />
+
+            {/* Quick Actions: Ask Copilot & View Redlines */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 no-print">
+              <button
+                onClick={() => setIsChatOpen(true)}
+                className="flex items-center justify-between p-3.5 bg-white border border-[#e5e3df] hover:border-[#1a1917] rounded-2xl shadow-xs transition-colors text-left group"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-xl bg-[#1a1917] text-white flex items-center justify-center shrink-0">
+                    <MessageSquare className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold text-[#1a1917] group-hover:text-black">
+                      Ask Copilot
+                    </p>
+                    <p className="text-[11px] text-[#78716c]">Ask questions about this saved contract</p>
+                  </div>
+                </div>
+                <span className="text-xs text-[#78716c] font-bold">→</span>
+              </button>
+
+              <button
+                onClick={() => setIsRedlineOpen(true)}
+                className="flex items-center justify-between p-3.5 bg-white border border-[#e5e3df] hover:border-[#1a1917] rounded-2xl shadow-xs transition-colors text-left group"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-xl bg-red-50 text-red-700 border border-red-200 flex items-center justify-center shrink-0">
+                    <FileEdit className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold text-[#1a1917] group-hover:text-black">
+                      Redlines & Export
+                    </p>
+                    <p className="text-[11px] text-[#78716c]">Visual diff & email amendment draft</p>
+                  </div>
+                </div>
+                <span className="text-xs text-[#78716c] font-bold">→</span>
+              </button>
+            </div>
+
             {/* Risk summary */}
             <div className="flex gap-2">
               {[
@@ -211,6 +259,24 @@ export default function HistoryBriefs({ onClose }: HistoryBriefsProps) {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Copilot Chat & Redline Modals */}
+      {selectedContract && (
+        <>
+          <AskLexARChat
+            isOpen={isChatOpen}
+            onClose={() => setIsChatOpen(false)}
+            scrubbedText={selectedContract.scrubbedText || selectedContract.rawText}
+            clauses={selectedContract.clauses}
+          />
+          <RedlineDiffModal
+            isOpen={isRedlineOpen}
+            onClose={() => setIsRedlineOpen(false)}
+            clauses={selectedContract.clauses}
+            documentTitle={selectedContract.title}
+          />
+        </>
+      )}
     </div>
   );
 }

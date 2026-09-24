@@ -36,6 +36,14 @@ const nextConfig: NextConfig = {
             value: "nosniff",
           },
           {
+            key: "X-Frame-Options",
+            value: "DENY",
+          },
+          {
+            key: "Permissions-Policy",
+            value: "camera=(self), microphone=(), geolocation=()",
+          },
+          {
             key: "Referrer-Policy",
             value: "strict-origin-when-cross-origin",
           },

@@ -271,6 +271,8 @@ export default function DocumentUpload({ onClose, onSaved }: DocumentUploadProps
               setSummary(null);
             }}
             onBackToReview={() => setStep('review')}
+            scrubbedText={scrubbedText}
+            documentTitle={fileName || 'Uploaded PDF Document'}
           />
         )}
       </AnimatePresence>

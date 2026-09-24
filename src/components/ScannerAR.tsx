@@ -218,6 +218,8 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
               onSave={handleSave}
               onScanAnother={handleScanAnother}
               onBackToReview={() => setStep('review')}
+              scrubbedText={scrubbedText}
+              documentTitle="Camera Scanned Document"
             />
           )}
         </AnimatePresence>

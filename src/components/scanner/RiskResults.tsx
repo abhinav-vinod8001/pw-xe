@@ -4,9 +4,15 @@ import { useState, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import {
   Save, CheckCircle, AlertTriangle, FileText, ArrowLeft,
-  RotateCcw, Sparkles, Copy, Check
+  RotateCcw, Sparkles, Copy, Check, MessageSquare, FileEdit, Languages
 } from 'lucide-react';
 import { RISK_CONFIG, type Clause } from '@/lib/constants';
+import { SUPPORTED_LANGUAGES, LEGAL_TRANSLATIONS, type SupportedLanguage } from '@/lib/translations';
+
+// New Advanced Modules
+import FairnessGauge from './FairnessGauge';
+import AskLexARChat from './AskLexARChat';
+import RedlineDiffModal from './RedlineDiffModal';
 
 interface RiskResultsProps {
   clauses: Clause[];
@@ -15,19 +21,10 @@ interface RiskResultsProps {
   onSave: () => void;
   onScanAnother: () => void;
   onBackToReview?: () => void;
+  scrubbedText?: string;
+  documentTitle?: string;
 }
 
-/**
- * Risk Results View
- * 
- * Displays the AI-analyzed clauses grouped by risk level with:
- * - Executive summary highlighting overall risk posture
- * - Summary counters per risk level
- * - Actionable Safe Counter-Proposals and Negotiation Scripts on RED clauses
- * - One-click clipboard copy for revisions and talking points
- * - Informative empty state if no clauses were detected
- * - Local save to history
- */
 export default function RiskResults({ 
   clauses, 
   summary,
@@ -35,8 +32,13 @@ export default function RiskResults({
   onSave, 
   onScanAnother,
   onBackToReview,
+  scrubbedText = '',
+  documentTitle = 'Contract Document',
 }: RiskResultsProps) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [isRedlineOpen, setIsRedlineOpen] = useState(false);
+  const [activeLang, setActiveLang] = useState<SupportedLanguage>('en');
 
   const copyToClipboard = useCallback((text: string, id: string) => {
     navigator.clipboard.writeText(text);
@@ -49,8 +51,25 @@ export default function RiskResults({
   const redClauses = clauses.filter(c => c.riskLevel === 'RED');
   const yellowClauses = clauses.filter(c => c.riskLevel === 'YELLOW');
   const greenClauses = clauses.filter(c => c.riskLevel === 'GREEN');
-
   const hasHighRisk = redClauses.length > 0;
+
+  // Translation helper
+  const getTranslatedSummary = (clause: Clause) => {
+    if (activeLang === 'en') return clause.summary;
+
+    const lower = `${clause.category || ''} ${clause.text || ''}`.toLowerCase();
+    let key = '';
+    if (lower.includes('liab') || lower.includes('indemn')) key = 'unlimited_liability';
+    else if (lower.includes('patent') || lower.includes('intellect') || lower.includes('invent')) key = 'ip_assignment';
+    else if (lower.includes('compete') || lower.includes('restraint')) key = 'non_compete';
+    else if (lower.includes('terminat')) key = 'unilateral_termination';
+    else if (lower.includes('arbitrat') || lower.includes('dispute')) key = 'foreign_arbitration';
+
+    if (key && LEGAL_TRANSLATIONS[key]?.[activeLang]) {
+      return LEGAL_TRANSLATIONS[key][activeLang];
+    }
+    return clause.summary;
+  };
 
   return (
     <motion.div 
@@ -61,13 +80,17 @@ export default function RiskResults({
       role="region"
       aria-label="Document analysis results"
     >
+      {/* Top Bar Navigation */}
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-[#1a1917]">Scan Results</h2>
+        <div>
+          <h2 className="text-lg font-semibold text-[#1a1917]">Contract Intelligence</h2>
+          <p className="text-xs text-[#78716c]">Comprehensive risk analysis & redlines</p>
+        </div>
         <div className="flex items-center gap-2">
           {onBackToReview && (
             <button
               onClick={onBackToReview}
-              className="text-xs font-medium text-[#57534e] hover:text-[#1a1917] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1a1917] rounded px-2.5 py-1.5 border border-[#e5e3df] bg-white hover:bg-[#f8f7f4] flex items-center gap-1 transition-colors"
+              className="text-xs font-medium text-[#57534e] hover:text-[#1a1917] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1a1917] rounded-xl px-3 py-1.5 border border-[#e5e3df] bg-white hover:bg-[#f8f7f4] flex items-center gap-1.5 transition-colors"
               aria-label="View or edit extracted text"
             >
               <ArrowLeft className="w-3.5 h-3.5" />
@@ -76,13 +99,79 @@ export default function RiskResults({
           )}
           <button 
             onClick={onScanAnother} 
-            className="text-xs font-medium text-[#57534e] hover:text-[#1a1917] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1a1917] rounded px-2.5 py-1.5 border border-[#e5e3df] bg-white hover:bg-[#f8f7f4] flex items-center gap-1 transition-colors"
+            className="text-xs font-medium text-[#57534e] hover:text-[#1a1917] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1a1917] rounded-xl px-3 py-1.5 border border-[#e5e3df] bg-white hover:bg-[#f8f7f4] flex items-center gap-1.5 transition-colors"
             aria-label="Scan another document"
           >
             <RotateCcw className="w-3.5 h-3.5" />
-            <span>Scan another</span>
+            <span>New scan</span>
           </button>
         </div>
+      </div>
+
+      {/* Contract Fairness Health Index (Feature 1) */}
+      <FairnessGauge clauses={clauses} />
+
+      {/* Quick Action Floating Bar: Ask LexAR & Redline Diff (Features 2 & 3) */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <button
+          onClick={() => setIsChatOpen(true)}
+          className="flex items-center justify-between p-3.5 bg-white border border-[#e5e3df] hover:border-[#1a1917] rounded-2xl shadow-xs transition-colors text-left group"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-[#1a1917] text-white flex items-center justify-center shrink-0">
+              <MessageSquare className="w-4 h-4" />
+            </div>
+            <div>
+              <p className="text-xs font-semibold text-[#1a1917] group-hover:text-black">
+                Ask LexAR Copilot
+              </p>
+              <p className="text-[11px] text-[#78716c]">Ask any specific question about your terms</p>
+            </div>
+          </div>
+          <span className="text-xs text-[#78716c] group-hover:translate-x-0.5 transition-transform font-bold">
+            →
+          </span>
+        </button>
+
+        <button
+          onClick={() => setIsRedlineOpen(true)}
+          className="flex items-center justify-between p-3.5 bg-white border border-[#e5e3df] hover:border-[#1a1917] rounded-2xl shadow-xs transition-colors text-left group"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-red-50 text-red-700 border border-red-200 flex items-center justify-center shrink-0">
+              <FileEdit className="w-4 h-4" />
+            </div>
+            <div>
+              <p className="text-xs font-semibold text-[#1a1917] group-hover:text-black">
+                View Redlines & Export
+              </p>
+              <p className="text-[11px] text-[#78716c]">Visual diff & email amendment draft</p>
+            </div>
+          </div>
+          <span className="text-xs text-[#78716c] group-hover:translate-x-0.5 transition-transform font-bold">
+            →
+          </span>
+        </button>
+      </div>
+
+      {/* Language & Plain English Toggle (Feature 4) */}
+      <div className="flex items-center justify-between p-3 bg-[#f8f7f4] border border-[#e5e3df] rounded-2xl">
+        <div className="flex items-center gap-2 text-xs font-medium text-[#57534e]">
+          <Languages className="w-4 h-4" />
+          <span>Explanation Style / Language:</span>
+        </div>
+        <select
+          value={activeLang}
+          onChange={e => setActiveLang(e.target.value as SupportedLanguage)}
+          className="bg-white border border-[#e5e3df] rounded-xl px-2.5 py-1 text-xs text-[#1a1917] focus:outline-none focus:ring-1 focus:ring-[#1a1917]"
+          aria-label="Select explanation language"
+        >
+          {SUPPORTED_LANGUAGES.map(lang => (
+            <option key={lang.code} value={lang.code}>
+              {lang.flag} {lang.name}
+            </option>
+          ))}
+        </select>
       </div>
 
       {/* Executive Summary Card */}
@@ -103,7 +192,7 @@ export default function RiskResults({
               </span>
             ) : (
               <span className="text-[#78716c] flex items-center gap-1 font-semibold">
-                <FileText className="w-4 h-4" /> Document Summary
+                <FileText className="w-4 h-4" /> Executive Summary
               </span>
             )}
           </div>
@@ -130,37 +219,6 @@ export default function RiskResults({
         ))}
       </div>
 
-      {/* Empty State if no clauses were detected */}
-      {clauses.length === 0 && (
-        <div className="bg-white border border-[#e5e3df] rounded-2xl p-6 text-center space-y-4 shadow-sm">
-          <div className="w-12 h-12 rounded-full bg-amber-50 text-amber-700 mx-auto flex items-center justify-center">
-            <AlertTriangle className="w-6 h-6" />
-          </div>
-          <div>
-            <h3 className="font-semibold text-[#1a1917] text-base">No Standard Clauses Identified</h3>
-            <p className="text-sm text-[#57534e] mt-1 max-w-md mx-auto">
-              The AI was unable to match recognizable contract clauses. This usually happens if the photo was blurry, angled, or had uneven lighting.
-            </p>
-          </div>
-          <div className="flex flex-col sm:flex-row gap-2 justify-center pt-2">
-            {onBackToReview && (
-              <button
-                onClick={onBackToReview}
-                className="px-4 py-2.5 rounded-xl border border-[#e5e3df] text-[#1a1917] text-xs font-medium hover:bg-[#f8f7f4] transition-colors"
-              >
-                Review or Edit Scanned Text
-              </button>
-            )}
-            <button
-              onClick={onScanAnother}
-              className="px-4 py-2.5 rounded-xl bg-[#1a1917] text-white text-xs font-medium hover:bg-[#2a2926] transition-colors"
-            >
-              Take Clearer Photo
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Clause Cards */}
       {clauses.length > 0 && (
         <div className="space-y-4" role="list" aria-label="Analyzed clauses">
@@ -175,7 +233,7 @@ export default function RiskResults({
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: i * 0.05 }}
-                className={`border rounded-2xl p-4 bg-white ${cfg.card} shadow-sm`}
+                className={`border rounded-2xl p-4 bg-white ${cfg.card} shadow-xs`}
                 role="listitem"
                 aria-label={`${cfg.label} clause: ${clause.category || 'General'}`}
               >
@@ -194,12 +252,14 @@ export default function RiskResults({
                 {/* Original Clause Text */}
                 <p className="text-[#1a1917] text-sm leading-relaxed">{clause.text}</p>
                 
-                {/* Plain-English Explanation */}
+                {/* Plain-English Explanation (Supports Translations) */}
                 <div className="mt-3 pt-3 border-t border-[#e5e3df]">
-                  <p className="text-[#57534e] text-sm leading-relaxed">{clause.summary}</p>
+                  <p className="text-[#57534e] text-sm leading-relaxed">
+                    {getTranslatedSummary(clause)}
+                  </p>
                 </div>
 
-                {/* Safe Counter-Proposal & Negotiation Strategy (Actionable defense for RED clauses) */}
+                {/* Safe Counter-Proposal & Negotiation Strategy on RED clauses */}
                 {isRed && hasCounter && (
                   <div className="mt-4 pt-3 border-t border-red-200/80 bg-white/80 rounded-xl p-3.5 space-y-3">
                     <div className="flex items-center gap-1.5 text-xs font-semibold text-red-900">
@@ -297,6 +357,21 @@ export default function RiskResults({
           )}
         </div>
       )}
+
+      {/* Modals */}
+      <AskLexARChat
+        isOpen={isChatOpen}
+        onClose={() => setIsChatOpen(false)}
+        scrubbedText={scrubbedText}
+        clauses={clauses}
+      />
+
+      <RedlineDiffModal
+        isOpen={isRedlineOpen}
+        onClose={() => setIsRedlineOpen(false)}
+        clauses={clauses}
+        documentTitle={documentTitle}
+      />
     </motion.div>
   );
 }
