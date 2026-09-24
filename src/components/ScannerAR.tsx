@@ -37,6 +37,7 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
   const [scrubbedText, setScrubbedText] = useState('');
   const [scrubStats, setScrubStats] = useState<ScrubbingStats | null>(null);
   const [clauses, setClauses] = useState<Clause[]>([]);
+  const [summary, setSummary] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
@@ -64,10 +65,11 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
     setStep('extracting');
     setError(null);
     setClauses([]);
+    setSummary(null);
 
     try {
       const extracted = await extractText(file);
-      if (!extracted || extracted.length < 20) {
+      if (!extracted || extracted.length < 15) {
         throw new Error('No readable text detected. Please ensure the document is well-lit and in focus.');
       }
 
@@ -84,6 +86,14 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
       setPreviewImage(null);
     }
   }, [extractText]);
+
+  // Allow user to edit extracted text in review screen
+  const handleUpdateText = useCallback((newText: string) => {
+    setRawText(newText);
+    const { scrubbedText: scrubbed, stats } = scrubPIIWithDetails(newText);
+    setScrubbedText(scrubbed);
+    setScrubStats(stats);
+  }, []);
 
   // Step 3 → 4: User approves scrubbed text
   const handleAnalyze = useCallback(async () => {
@@ -108,6 +118,7 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
 
       const result = await res.json();
       setClauses(result.clauses || []);
+      setSummary(result.summary || null);
       setStep('result');
     } catch (err: any) {
       if (err.name === 'AbortError') return;
@@ -183,8 +194,15 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
           {step === 'review' && scrubStats && (
             <ReviewScrubbedText
               scrubbedText={scrubbedText}
+              rawText={rawText}
               stats={scrubStats}
               onAnalyze={handleAnalyze}
+              onUpdateText={handleUpdateText}
+              onRetake={() => {
+                setStep('camera');
+                if (previewImage) URL.revokeObjectURL(previewImage);
+                setPreviewImage(null);
+              }}
             />
           )}
 
@@ -195,9 +213,11 @@ export default function ScannerAR({ onClose }: ScannerARProps) {
           {step === 'result' && (
             <RiskResults
               clauses={clauses}
+              summary={summary}
               saved={saved}
               onSave={handleSave}
               onScanAnother={handleScanAnother}
+              onBackToReview={() => setStep('review')}
             />
           )}
         </AnimatePresence>

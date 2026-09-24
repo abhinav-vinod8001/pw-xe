@@ -12,19 +12,16 @@ import { NextRequest, NextResponse } from 'next/server';
  * and BEFORE the text is sent to /api/analyze.
  */
 
-const OCR_SYSTEM_PROMPT = `You are a document OCR engine. Your ONLY job is to extract ALL text from the provided image, preserving the original formatting as closely as possible.
+const OCR_SYSTEM_PROMPT = `You are a high-precision document OCR transcription engine.
+Transcribe ALL legible text from the provided document image verbatim.
+Preserve paragraph structure, clause headings, numbering, and exact wording.
+Do NOT add any conversational preamble, commentary, greetings, or markdown code block fences (like \`\`\`text or \`\`\`markdown).
+Output ONLY the raw transcribed text.`;
 
-RULES:
-1. Output ONLY the extracted text. No commentary, no analysis, no summaries.
-2. Preserve paragraph breaks and section numbering.
-3. If text is unclear, make your best effort — do NOT skip sections.
-4. Do NOT add any text that is not visible in the image.
-5. If no readable text is found, respond with exactly: [NO_TEXT_FOUND]`;
-
-// Reuse the same rate limiter logic from analyze route
+// Rate limiter logic: allow 20 requests per minute
 const rateLimitStore = new Map<string, number[]>();
 const RATE_LIMIT_WINDOW_MS = 60000;
-const MAX_REQUESTS_PER_WINDOW = 8;
+const MAX_REQUESTS_PER_WINDOW = 20;
 
 function checkRateLimit(ip: string): boolean {
   const now = Date.now();
@@ -41,7 +38,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const ip = request.headers.get('x-forwarded-for') || 'unknown-ip';
     if (!checkRateLimit(ip)) {
       return NextResponse.json(
-        { error: 'Too many requests. Please try again later.' },
+        { error: 'Too many requests. Please wait a moment and try again.' },
         { status: 429 }
       );
     }
@@ -64,11 +61,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       );
     }
 
-    // Check size (~4MB base64 limit for Groq)
+    // Check size limit (~8MB base64)
     const sizeBytes = Math.ceil(image.length * 0.75);
-    if (sizeBytes > 4 * 1024 * 1024) {
+    if (sizeBytes > 8 * 1024 * 1024) {
       return NextResponse.json(
-        { error: 'Image too large. Maximum size is 4MB.' },
+        { error: 'Image too large. Maximum size is 8MB.' },
         { status: 413 }
       );
     }
@@ -84,10 +81,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const { default: Groq } = await import('groq-sdk');
     const groq = new Groq({ apiKey });
 
-    // Vision models to try
+    // Active Groq vision models. qwen/qwen3.8-27b has confirmed vision support.
     const visionModels = [
-      process.env.GROQ_VISION_MODEL || 'qwen/qwen-2.5-vl-32b-instruct',
-      'meta-llama/llama-4-scout-17b-16e-instruct',
+      process.env.GROQ_VISION_MODEL || 'qwen/qwen3.8-27b',
     ];
 
     let result: string | null = null;
@@ -108,17 +104,27 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
                 },
                 {
                   type: 'text',
-                  text: 'Extract all text from this document image.',
+                  text: 'Transcribe all text from this document image.',
                 },
               ],
             },
           ],
-          temperature: 0,
-          max_tokens: 4096,
+          temperature: 0.1,
+          // Groq on-demand OTPM limit for vision models is 1000 tokens/min.
+          // Keeping max_tokens <= 850 prevents rate limit rejections while allowing ~3500 chars of text.
+          max_tokens: 850,
         });
 
-        const text = completion.choices[0]?.message?.content?.trim() || '';
-        if (text && text !== '[NO_TEXT_FOUND]') {
+        let text = completion.choices[0]?.message?.content?.trim() || '';
+        
+        // Strip markdown code block wrappers if any
+        if (text.startsWith('```')) {
+          text = text.replace(/^```[a-zA-Z]*\n?/, '').replace(/\n?```$/, '').trim();
+        }
+        // Strip common conversational preambles
+        text = text.replace(/^(here is the (extracted|transcribed) text[:\n]*)/i, '').trim();
+
+        if (text && text.length > 5) {
           result = text;
           break;
         }

@@ -48,13 +48,31 @@ function sanitizeFileName(name?: string): string {
 
 // No mock classifier — forcing real Groq API usage
 
-const GROQ_SYSTEM_PROMPT = `You are LexAR, an elite, pragmatic legal AI assistant. Your task is to analyze the provided legal text and extract its clauses, categorizing them by risk level.
+const GROQ_SYSTEM_PROMPT = `You are LexAR, an elite contract risk assessment AI. Your primary goal is to protect the signing individual (contractor, employee, consumer, or tenant) by identifying predatory, hazardous, or disproportionate terms.
 
-CRITICAL INSTRUCTIONS:
-1. Do NOT hallucinate risks. You must be highly conservative and pragmatic.
-2. If the provided text is garbled, unreadable, or clearly NOT a legal document, return {"clauses":[],"summary":"The provided text does not appear to be a readable legal document."}. Do NOT invent clauses.
-3. Context is key: A confidentiality clause in a Non-Disclosure Agreement is perfectly standard (GREEN). Do not flag standard, customary, or expected clauses as risky unless they are highly unusual or heavily one-sided.
-4. Only flag clauses as RED or YELLOW if they pose a genuine, unexpected, or disproportionate threat to a signing party.
+ANALYSIS RULES:
+1. Examine the provided text carefully. Even if the text contains minor OCR transcription artifacts or [REDACTED] tokens, extract and analyze all discernable contractual provisions.
+2. Accurately categorize each extracted clause into one of three risk levels based on its impact on the signing party:
+   - RED (High Risk): Predatory, dangerous, uncapped, or heavily one-sided terms. Examples:
+     * Unlimited or uncapped personal liability and sweeping indemnity
+     * Overly broad IP assignment (e.g. claiming rights to personal, uncompensated, prior, or life inventions)
+     * Severe non-compete clauses (e.g. long duration, worldwide scope, or complete industry bans)
+     * Unilateral termination without cause, or indefinite payment withholding
+     * Distant foreign dispute resolution, mandatory arbitration with unilateral fee shifting
+     * Draconian penalties, automatic evergreen renewals with narrow opt-out windows
+     * Complete waiver of rights or remedies
+   - YELLOW (Review / Moderate Risk): Terms requiring negotiation, caution, or clarification. Examples:
+     * Asymmetrical notice periods
+     * Non-solicitation of clients or staff
+     * Broad definitions of confidential information
+     * Specific audit rights or strict warranty obligations
+   - GREEN (Standard / Low Risk): Customary, balanced, or expected standard provisions. Examples:
+     * Mutual confidentiality obligations
+     * Standard definitions, recitals, and severability
+     * Standard payment terms with cure periods
+3. HEAVY RISK DETECTION: If the document contains heavy risks or predatory terms, flag them as RED without hesitation. Do NOT artificially downplay risks or force clauses to be GREEN if they are dangerous.
+4. Extract between 3 to 10 key distinct clauses from the document. Preserve the actual text of the clause in the "text" field.
+5. Provide a plain-English explanation of what the clause does and why it matters to the signer.
 
 Return a valid JSON object with this exact structure:
 {
@@ -63,18 +81,11 @@ Return a valid JSON object with this exact structure:
       "text": "The exact clause text from the document",
       "riskLevel": "RED" | "YELLOW" | "GREEN",
       "summary": "Plain-English explanation of the clause.",
-      "category": "Type of clause (e.g., Liability, Indemnification, Term)"
+      "category": "Clause category (e.g., Liability, Intellectual Property, Non-Compete, Termination, Payment, Dispute Resolution)"
     }
   ],
   "summary": "Brief overall summary of the document's risk profile"
-}
-
-Risk level guidelines:
-- RED (High Risk): Highly unusual, predatory, or extremely one-sided terms (e.g., unlimited liability, uncompensated IP assignment, draconian non-competes, hidden auto-renewal traps).
-- YELLOW (Moderate Risk): Clauses that require careful review but aren't necessarily predatory (e.g., unusual governing law, tight indemnification loops, non-standard warranty disclaimers).
-- GREEN (Standard/Low Risk): Customary clauses expected for the document type (e.g., confidentiality in an NDA, standard definitions, recitals, severability, mutual obligations).
-
-Return ONLY valid JSON. Extract up to 10 key clauses. You MUST include a balanced mix of RED, YELLOW, and GREEN clauses (if they exist in the text) so the user sees both the risky and the standard/safe parts of their document. Preserve exact text from the document.`;
+}`;
 
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
@@ -133,6 +144,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         const modelsToTry = [
           process.env.GROQ_MODEL || 'openai/gpt-oss-120b',
           'openai/gpt-oss-20b',
+          'qwen/qwen3.8-27b',
         ];
 
         let completion;
@@ -150,7 +162,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
                 },
               ],
               temperature: 0.1,
-              max_tokens: 4096,
+              max_tokens: 3000,
               response_format: { type: 'json_object' },
             });
             if (completion) break;
