@@ -10,6 +10,8 @@ export interface Clause {
   riskLevel: RiskLevel;
   summary: string;
   category?: string;
+  counterProposal?: string;
+  negotiationTip?: string;
 }
 
 export const RISK_CONFIG = {

@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ChevronLeft, Loader2, AlertTriangle, Zap, CheckCircle,
-  ChevronRight, Trash2, Printer, Clock
+  ChevronRight, Trash2, Printer, Clock, Sparkles, Copy, Check
 } from 'lucide-react';
 import { getAllContracts, deleteContract, getContractById, type Contract } from '@/lib/db';
 import { RISK_CONFIG, type Clause, type RiskLevel } from '@/lib/constants';
@@ -217,9 +217,19 @@ export default function HistoryBriefs({ onClose }: HistoryBriefsProps) {
 
 function ClauseCard({ clause }: { clause: Clause }) {
   const [expanded, setExpanded] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const risk = RISK_CONFIG[clause.riskLevel];
   const text = clause.text;
   const isLong = text.length > 140;
+
+  const copyText = (content: string, id: string) => {
+    navigator.clipboard.writeText(content);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const isRed = clause.riskLevel === 'RED';
+  const hasCounter = Boolean(clause.counterProposal || clause.negotiationTip);
 
   return (
     <div className={`border rounded-xl p-4 print-card ${risk.card}`}>
@@ -241,6 +251,76 @@ function ClauseCard({ clause }: { clause: Clause }) {
         )}
       </p>
       <p className="text-[#57534e] text-xs mt-1.5 leading-relaxed">{clause.summary}</p>
+
+      {/* Safe Counter-Proposal & Negotiation Strategy */}
+      {isRed && hasCounter && (
+        <div className="mt-3 pt-3 border-t border-red-200/80 bg-white/80 rounded-xl p-3 space-y-2.5">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-red-900">
+            <Sparkles className="w-3.5 h-3.5 text-red-600" />
+            <span>Recommended Negotiation Strategy</span>
+          </div>
+
+          {clause.counterProposal && (
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[11px] font-semibold text-[#78716c] uppercase tracking-wider">
+                  Safe Counter-Clause Revision
+                </span>
+                <button
+                  onClick={() => copyText(clause.counterProposal!, 'rev')}
+                  className="text-[11px] font-medium text-red-700 hover:text-red-900 flex items-center gap-1 transition-colors px-1.5 py-0.5 rounded hover:bg-red-100/50"
+                  aria-label="Copy proposed counter clause"
+                >
+                  {copiedId === 'rev' ? (
+                    <>
+                      <Check className="w-3 h-3 text-green-600" />
+                      <span className="text-green-700 font-semibold">Copied!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3 h-3" />
+                      <span>Copy Revision</span>
+                    </>
+                  )}
+                </button>
+              </div>
+              <p className="text-xs text-[#1a1917] bg-[#f8f7f4] border border-[#e5e3df] p-2 rounded leading-relaxed font-mono">
+                {clause.counterProposal}
+              </p>
+            </div>
+          )}
+
+          {clause.negotiationTip && (
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[11px] font-semibold text-[#78716c] uppercase tracking-wider">
+                  Diplomatic Talking Point
+                </span>
+                <button
+                  onClick={() => copyText(clause.negotiationTip!, 'tip')}
+                  className="text-[11px] font-medium text-red-700 hover:text-red-900 flex items-center gap-1 transition-colors px-1.5 py-0.5 rounded hover:bg-red-100/50"
+                  aria-label="Copy negotiation talking point"
+                >
+                  {copiedId === 'tip' ? (
+                    <>
+                      <Check className="w-3 h-3 text-green-600" />
+                      <span className="text-green-700 font-semibold">Copied!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3 h-3" />
+                      <span>Copy Script</span>
+                    </>
+                  )}
+                </button>
+              </div>
+              <p className="text-xs text-[#44403c] italic bg-amber-50/70 border border-amber-200/70 p-2 rounded leading-relaxed">
+                &ldquo;{clause.negotiationTip}&rdquo;
+              </p>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

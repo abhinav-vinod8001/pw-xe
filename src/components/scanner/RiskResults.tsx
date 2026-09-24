@@ -1,7 +1,11 @@
 'use client';
 
+import { useState, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { Save, CheckCircle, AlertTriangle, FileText, ArrowLeft, RotateCcw } from 'lucide-react';
+import {
+  Save, CheckCircle, AlertTriangle, FileText, ArrowLeft,
+  RotateCcw, Sparkles, Copy, Check
+} from 'lucide-react';
 import { RISK_CONFIG, type Clause } from '@/lib/constants';
 
 interface RiskResultsProps {
@@ -18,10 +22,11 @@ interface RiskResultsProps {
  * 
  * Displays the AI-analyzed clauses grouped by risk level with:
  * - Executive summary highlighting overall risk posture
- * - A summary bar showing counts per risk level
- * - Individual clause cards with risk badges and explanations
+ * - Summary counters per risk level
+ * - Actionable Safe Counter-Proposals and Negotiation Scripts on RED clauses
+ * - One-click clipboard copy for revisions and talking points
  * - Informative empty state if no clauses were detected
- * - "Save to history" button for local persistence
+ * - Local save to history
  */
 export default function RiskResults({ 
   clauses, 
@@ -31,6 +36,16 @@ export default function RiskResults({
   onScanAnother,
   onBackToReview,
 }: RiskResultsProps) {
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const copyToClipboard = useCallback((text: string, id: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => {
+      setCopiedId(prev => (prev === id ? null : prev));
+    }, 2000);
+  }, []);
+
   const redClauses = clauses.filter(c => c.riskLevel === 'RED');
   const yellowClauses = clauses.filter(c => c.riskLevel === 'YELLOW');
   const greenClauses = clauses.filter(c => c.riskLevel === 'GREEN');
@@ -83,11 +98,11 @@ export default function RiskResults({
         >
           <div className="flex items-center gap-2 font-medium mb-1 text-xs uppercase tracking-wider">
             {hasHighRisk ? (
-              <span className="text-red-700 flex items-center gap-1">
+              <span className="text-red-700 flex items-center gap-1 font-semibold">
                 <AlertTriangle className="w-4 h-4" /> High Risk Alert
               </span>
             ) : (
-              <span className="text-[#78716c] flex items-center gap-1">
+              <span className="text-[#78716c] flex items-center gap-1 font-semibold">
                 <FileText className="w-4 h-4" /> Document Summary
               </span>
             )}
@@ -148,31 +163,111 @@ export default function RiskResults({
 
       {/* Clause Cards */}
       {clauses.length > 0 && (
-        <div className="space-y-3" role="list" aria-label="Analyzed clauses">
+        <div className="space-y-4" role="list" aria-label="Analyzed clauses">
           {clauses.map((clause, i) => {
             const cfg = RISK_CONFIG[clause.riskLevel];
+            const isRed = clause.riskLevel === 'RED';
+            const hasCounter = Boolean(clause.counterProposal || clause.negotiationTip);
+
             return (
               <motion.article
                 key={i}
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: i * 0.05 }}
-                className={`border rounded-2xl p-4 bg-white ${cfg.card}`}
+                className={`border rounded-2xl p-4 bg-white ${cfg.card} shadow-sm`}
                 role="listitem"
                 aria-label={`${cfg.label} clause: ${clause.category || 'General'}`}
               >
-                <div className="flex items-center gap-2 mb-2.5">
-                  <span className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${cfg.badge}`}>
-                    {cfg.icon} {cfg.label}
-                  </span>
-                  {clause.category && (
-                    <span className="text-[#a8a29e] text-xs">{clause.category}</span>
-                  )}
+                {/* Header Badge */}
+                <div className="flex items-center justify-between mb-2.5">
+                  <div className="flex items-center gap-2">
+                    <span className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${cfg.badge}`}>
+                      {cfg.icon} {cfg.label}
+                    </span>
+                    {clause.category && (
+                      <span className="text-[#78716c] text-xs font-medium">{clause.category}</span>
+                    )}
+                  </div>
                 </div>
+
+                {/* Original Clause Text */}
                 <p className="text-[#1a1917] text-sm leading-relaxed">{clause.text}</p>
+                
+                {/* Plain-English Explanation */}
                 <div className="mt-3 pt-3 border-t border-[#e5e3df]">
                   <p className="text-[#57534e] text-sm leading-relaxed">{clause.summary}</p>
                 </div>
+
+                {/* Safe Counter-Proposal & Negotiation Strategy (Actionable defense for RED clauses) */}
+                {isRed && hasCounter && (
+                  <div className="mt-4 pt-3 border-t border-red-200/80 bg-white/80 rounded-xl p-3.5 space-y-3">
+                    <div className="flex items-center gap-1.5 text-xs font-semibold text-red-900">
+                      <Sparkles className="w-3.5 h-3.5 text-red-600" />
+                      <span>Recommended Negotiation Strategy</span>
+                    </div>
+
+                    {clause.counterProposal && (
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-[11px] font-semibold text-[#78716c] uppercase tracking-wider">
+                            Safe Counter-Clause Revision
+                          </span>
+                          <button
+                            onClick={() => copyToClipboard(clause.counterProposal!, `rev-${i}`)}
+                            className="text-[11px] font-medium text-red-700 hover:text-red-900 flex items-center gap-1 transition-colors px-1.5 py-0.5 rounded hover:bg-red-100/50"
+                            aria-label="Copy proposed counter clause"
+                          >
+                            {copiedId === `rev-${i}` ? (
+                              <>
+                                <Check className="w-3 h-3 text-green-600" />
+                                <span className="text-green-700 font-semibold">Copied!</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3 h-3" />
+                                <span>Copy Revision</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                        <p className="text-xs text-[#1a1917] bg-[#f8f7f4] border border-[#e5e3df] p-2.5 rounded-lg leading-relaxed font-mono">
+                          {clause.counterProposal}
+                        </p>
+                      </div>
+                    )}
+
+                    {clause.negotiationTip && (
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-[11px] font-semibold text-[#78716c] uppercase tracking-wider">
+                            Diplomatic Talking Point
+                          </span>
+                          <button
+                            onClick={() => copyToClipboard(clause.negotiationTip!, `tip-${i}`)}
+                            className="text-[11px] font-medium text-red-700 hover:text-red-900 flex items-center gap-1 transition-colors px-1.5 py-0.5 rounded hover:bg-red-100/50"
+                            aria-label="Copy negotiation talking point"
+                          >
+                            {copiedId === `tip-${i}` ? (
+                              <>
+                                <Check className="w-3 h-3 text-green-600" />
+                                <span className="text-green-700 font-semibold">Copied!</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3 h-3" />
+                                <span>Copy Script</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                        <p className="text-xs text-[#44403c] italic bg-amber-50/70 border border-amber-200/70 p-2.5 rounded-lg leading-relaxed">
+                          &ldquo;{clause.negotiationTip}&rdquo;
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
               </motion.article>
             );
           })}
