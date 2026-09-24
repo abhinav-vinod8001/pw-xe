@@ -6,6 +6,8 @@
  * re-renders to 0ms latency.
  */
 
+import { createHash } from 'crypto';
+
 interface CacheEntry<T> {
   value: T;
   timestamp: number;
@@ -22,15 +24,10 @@ export class MemoryCache<T> {
   }
 
   /**
-   * Fast, collision-resistant DJB2 string hash
+   * Cryptographically secure SHA-256 hash
    */
   static hashKey(str: string): string {
-    let hash = 5381;
-    for (let i = 0; i < str.length; i++) {
-      hash = ((hash << 5) + hash) + str.charCodeAt(i); /* hash * 33 + c */
-      hash = hash & hash; // Convert to 32bit integer
-    }
-    return `lexar_${Math.abs(hash).toString(36)}`;
+    return `lexar_${createHash('sha256').update(str).digest('hex').slice(0, 32)}`;
   }
 
   get(key: string): T | null {

@@ -55,4 +55,26 @@ describe('Fairness Score Calculator', () => {
     expect(categoryNames).toContain('Intellectual Property');
     expect(categoryNames).toContain('Dispute Resolution');
   });
+
+  it('should cap the maximum score and prevent GREEN clause dilution if RED clauses exist', () => {
+    const dilutedClauses: Clause[] = [
+      { text: 'Extremely dangerous uncapped liability', riskLevel: 'RED', summary: 'Uncapped Liability', category: 'Liability' },
+      { text: 'Standard severability', riskLevel: 'GREEN', summary: 'Severability', category: 'General' },
+      { text: 'Standard 30-day notice', riskLevel: 'GREEN', summary: 'Standard notice', category: 'Termination' },
+      { text: 'Governing law', riskLevel: 'GREEN', summary: 'Governing Law', category: 'General' },
+      { text: 'Entire agreement', riskLevel: 'GREEN', summary: 'Entire Agreement', category: 'General' },
+    ];
+
+    const singleRedRes = calculateFairnessScore(dilutedClauses);
+    // Even with 4 green clauses, a single RED clause caps the score at 64
+    expect(singleRedRes.overallScore).toBeLessThanOrEqual(64);
+    expect(singleRedRes.grade).toBe('C');
+
+    // Add another RED clause
+    dilutedClauses.push({ text: 'No ability to sue', riskLevel: 'RED', summary: 'No lawsuit', category: 'Disputes' });
+    const doubleRedRes = calculateFairnessScore(dilutedClauses);
+    // Two RED clauses cap it at 44
+    expect(doubleRedRes.overallScore).toBeLessThanOrEqual(44);
+    expect(['D', 'F']).toContain(doubleRedRes.grade);
+  });
 });

@@ -5,7 +5,7 @@
 import { MemoryCache } from '../lib/cache';
 
 describe('MemoryCache', () => {
-  it('should generate stable DJB2 hashes for identical strings', () => {
+  it('should generate stable SHA-256 hashes for identical strings', () => {
     const hash1 = MemoryCache.hashKey('Contract Text A');
     const hash2 = MemoryCache.hashKey('Contract Text A');
     const hash3 = MemoryCache.hashKey('Contract Text B');

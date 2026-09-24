@@ -58,7 +58,16 @@ export function calculateFairnessScore(clauses: Clause[]): FairnessAssessment {
   score += Math.min(10, greenClauses.length * 3);
 
   // Clamp score strictly between 5 and 99
-  const overallScore = Math.max(5, Math.min(99, Math.round(score)));
+  let overallScore = Math.max(5, Math.min(99, Math.round(score)));
+
+  // CRITICAL FIX: A single RED toxic clause makes the contract inherently dangerous.
+  // Cap the maximum score at 64 (Grade C) if any RED clauses exist.
+  // If multiple RED clauses exist, cap it at 44 (Grade D).
+  if (redClauses.length >= 2 && overallScore > 44) {
+    overallScore = 44;
+  } else if (redClauses.length === 1 && overallScore > 64) {
+    overallScore = 64;
+  }
 
   // Determine Grade & Verdict
   let grade: FairnessAssessment['grade'] = 'F';

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { checkRateLimit } from '@/lib/rateLimit';
 
 /**
  * /api/ocr — Vision-based OCR endpoint
@@ -18,25 +19,12 @@ Preserve paragraph structure, clause headings, numbering, and exact wording.
 Do NOT add any conversational preamble, commentary, greetings, or markdown code block fences (like \`\`\`text or \`\`\`markdown).
 Output ONLY the raw transcribed text.`;
 
-// Rate limiter logic: allow 20 requests per minute
-const rateLimitStore = new Map<string, number[]>();
-const RATE_LIMIT_WINDOW_MS = 60000;
-const MAX_REQUESTS_PER_WINDOW = 20;
 
-function checkRateLimit(ip: string): boolean {
-  const now = Date.now();
-  const timestamps = rateLimitStore.get(ip) || [];
-  const validTimestamps = timestamps.filter(t => now - t < RATE_LIMIT_WINDOW_MS);
-  if (validTimestamps.length >= MAX_REQUESTS_PER_WINDOW) return false;
-  validTimestamps.push(now);
-  rateLimitStore.set(ip, validTimestamps);
-  return true;
-}
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
-    const ip = request.headers.get('x-forwarded-for') || 'unknown-ip';
-    if (!checkRateLimit(ip)) {
+    const { allowed } = checkRateLimit(request, 60000, 20);
+    if (!allowed) {
       return NextResponse.json(
         { error: 'Too many requests. Please wait a moment and try again.' },
         { status: 429 }

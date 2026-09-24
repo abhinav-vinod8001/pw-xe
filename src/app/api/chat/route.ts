@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { Clause } from '@/lib/constants';
+import { checkRateLimit } from '@/lib/rateLimit';
 
 interface ChatRequest {
   scrubbedText: string;
@@ -8,24 +9,7 @@ interface ChatRequest {
   history?: { role: 'user' | 'assistant'; content: string }[];
 }
 
-// In-memory rate limiting map: IP -> array of timestamps
-const rateLimitStore = new Map<string, number[]>();
-const RATE_LIMIT_WINDOW_MS = 60000;
-const MAX_REQUESTS_PER_WINDOW = 15;
 
-function checkRateLimit(ip: string): boolean {
-  const now = Date.now();
-  const timestamps = rateLimitStore.get(ip) || [];
-  const validTimestamps = timestamps.filter(t => now - t < RATE_LIMIT_WINDOW_MS);
-  
-  if (validTimestamps.length >= MAX_REQUESTS_PER_WINDOW) {
-    return false;
-  }
-  
-  validTimestamps.push(now);
-  rateLimitStore.set(ip, validTimestamps);
-  return true;
-}
 
 const CHAT_SYSTEM_PROMPT = `You are LexAR Copilot, an elite contract advisor and legal risk copilot.
 Your mission is to help signers (freelancers, employees, contractors, tenants) understand their legal agreements clearly and protect their rights.
@@ -37,8 +21,8 @@ SECURITY RULES:
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
-    const ip = request.headers.get('x-forwarded-for') || 'unknown-ip';
-    if (!checkRateLimit(ip)) {
+    const { allowed } = checkRateLimit(request, 60000, 15);
+    if (!allowed) {
       return NextResponse.json(
         { error: 'Too many requests. Please wait a moment before asking another question.' },
         { status: 429 }

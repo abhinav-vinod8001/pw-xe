@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { Clause } from '@/lib/constants';
+import { checkRateLimit } from '@/lib/rateLimit';
+import { analysisCache, MemoryCache } from '@/lib/cache';
 
 interface AnalyzeRequest {
   text: string;
@@ -12,33 +14,7 @@ interface AnalyzeResponse {
   summary?: string;
 }
 
-// In-memory rate limiting map: IP -> array of timestamps
-const rateLimitStore = new Map<string, number[]>();
-const RATE_LIMIT_WINDOW_MS = 60000;
-const MAX_REQUESTS_PER_WINDOW = 10;
 
-function checkRateLimit(ip: string): boolean {
-  const now = Date.now();
-  const timestamps = rateLimitStore.get(ip) || [];
-  const validTimestamps = timestamps.filter(t => now - t < RATE_LIMIT_WINDOW_MS);
-  
-  if (validTimestamps.length >= MAX_REQUESTS_PER_WINDOW) {
-    return false; // Rate limit exceeded
-  }
-  
-  validTimestamps.push(now);
-  rateLimitStore.set(ip, validTimestamps);
-  
-  // Cleanup occasionally (optional, but good for memory)
-  if (Math.random() < 0.1) {
-    for (const [key, times] of rateLimitStore.entries()) {
-      const valid = times.filter(t => now - t < RATE_LIMIT_WINDOW_MS);
-      if (valid.length === 0) rateLimitStore.delete(key);
-      else rateLimitStore.set(key, valid);
-    }
-  }
-  return true;
-}
 
 // Sanitize filename to prevent directory traversal or injection in prompt
 function sanitizeFileName(name?: string): string {
@@ -101,8 +77,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
     // 1. Rate Limiting
     // In App Router, we can attempt to get IP from headers or fallback
-    const ip = request.headers.get('x-forwarded-for') || 'unknown-ip';
-    if (!checkRateLimit(ip)) {
+    const { allowed } = checkRateLimit(request, 60000, 10);
+    if (!allowed) {
       return NextResponse.json(
         { error: 'Too many requests. Please try again later.' },
         { status: 429 }
@@ -141,6 +117,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     // Truncate text to ~12k chars to stay within token limits
     const truncatedText = text.slice(0, 12000);
+
+    const cacheKey = MemoryCache.hashKey(truncatedText);
+    const cachedResult = analysisCache.get(cacheKey);
+    if (cachedResult) {
+      return NextResponse.json(cachedResult);
+    }
 
     const apiKey = process.env.GROQ_API_KEY;
 
@@ -199,6 +181,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           if (!['RED', 'YELLOW', 'GREEN'].includes(risk)) risk = 'GREEN';
           return { ...c, riskLevel: risk as 'RED' | 'YELLOW' | 'GREEN' };
         });
+
+        analysisCache.set(cacheKey, parsed);
 
         return NextResponse.json(parsed);
       } catch (groqError: any) {
